@@ -1,0 +1,23 @@
+--- a/build/gn_run_binary.py
++++ b/build/gn_run_binary.py
+@@ -21,7 +21,18 @@ if not os.path.isabs(path):
+ 
+ # The rest of the arguments are passed directly to the executable.
+ args = [path] + sys.argv[2:]
+ 
+-ret = subprocess.call(args)
++# Add Debian sysroot libraries to LD_LIBRARY_PATH for cross-compilation
++# Only add /usr/lib path, NOT /lib (which contains glibc and would conflict)
++env = os.environ.copy()
++sysroot_base = os.path.join(
++    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
++    "build", "linux", "debian_bullseye_amd64-sysroot"
++)
++sysroot_lib = os.path.join(sysroot_base, "usr", "lib", "x86_64-linux-gnu")
++if os.path.exists(sysroot_lib):
++    env["LD_LIBRARY_PATH"] = sysroot_lib + ":" + env.get("LD_LIBRARY_PATH", "")
++
++ret = subprocess.call(args, env=env)
+ if ret != 0:
+   if ret <= -100:
+     # Windows error codes such as 0xC0000005 and 0xC0000409 are much easier to

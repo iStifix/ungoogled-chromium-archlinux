@@ -1,0 +1,52 @@
+--- a/gpu/config/gpu_info_collector.cc
++++ b/gpu/config/gpu_info_collector.cc
+@@ -66,6 +66,33 @@
+ 
+ namespace {
+ 
++constexpr uint32_t kVendorAMD = 0x1002;
++
++const char* GetAmdDeviceName(uint32_t device_id) {
++  switch (device_id) {
++    case 0x699F: return "AMD Radeon RX 550 (512SP)";
++    case 0x67FF: return "AMD Radeon RX 550 (640SP)";
++    case 0x67DF: return "AMD Radeon RX 470D";
++    case 0x67EF: return "AMD Radeon RX 460";
++    case 0x6FDF: return "AMD Radeon RX 580 2048SP";
++    case 0x67C4: return "AMD Radeon RX 470";
++    case 0x67C7: return "AMD Radeon RX 460";
++    case 0x67D0: return "AMD Radeon RX 470";
++    case 0x67C0: return "AMD Radeon RX 480";
++    default: return nullptr;
++  }
++}
++
++void MaybeOverrideDeviceIdentity(gpu::GPUInfo::GPUDevice* device) {
++  if (!device || device->vendor_id != kVendorAMD || !device->device_string.empty())
++    return;
++  if (const char* name = GetAmdDeviceName(device->device_id)) {
++    device->device_string = name;
++    if (device->vendor_string.empty())
++      device->vendor_string = "Advanced Micro Devices, Inc.";
++  }
++}
++
+ // From ANGLE's egl/eglext.h.
+ #ifndef EGL_ANGLE_feature_control
+ #define EGL_ANGLE_feature_control 1
+@@ -768,6 +795,7 @@
+   gpu_info->gpu.driver_vendor = std::move(active->driverVendor);
+   gpu_info->gpu.driver_version = std::move(active->driverVersion);
+   gpu_info->gpu.active = true;
++  MaybeOverrideDeviceIdentity(&gpu_info->gpu);
+ 
+   for (size_t i = 0; i < system_info->gpus.size(); i++) {
+     if (static_cast<int>(i) == system_info->activeGPUIndex) {
+@@ -784,6 +812,7 @@
+     device.driver_vendor = std::move(system_info->gpus[i].driverVendor);
+     device.driver_version = std::move(system_info->gpus[i].driverVersion);
+ 
++    MaybeOverrideDeviceIdentity(&device);
+     gpu_info->secondary_gpus.push_back(device);
+   }
+ 

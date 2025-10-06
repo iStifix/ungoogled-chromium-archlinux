@@ -79,7 +79,34 @@ makepkg -s
 
 If the build succeeds, you can run `makepkg --install` or `pacman -U ungoogled-chromium-*.pkg.*`. Running the latter requires root permission.
 
-### In a container
+### In a container (Automated Build for Baikal-M ARM64)
+
+For automated cross-compilation to ARM64 Baikal-M with RX550 optimizations:
+
+```sh
+# Start Arch Linux container with current directory mounted
+sudo docker run -it --rm -v "$PWD":/work archlinux bash
+
+# Inside the container, run the setup script as root
+./setup-docker.sh
+
+# Switch to builder user and start smart build
+su - builder
+./smart-build.sh auto       # Intelligent incremental build
+./smart-build.sh full       # Full rebuild from scratch
+./smart-build.sh status     # Show build status
+```
+
+This automated process will:
+1. Set up the build environment
+2. Fix ARM64 sysroot dependencies
+3. Compile ungoogled-chromium with Baikal-M + RX550 optimizations
+4. Create the installation package
+5. Skip already completed stages for faster rebuilds
+
+The build takes several hours initially, but subsequent rebuilds are much faster. The final package will be in `pkgdest/` directory.
+
+### Manual container setup (original method)
 
 For the latest testing version, run these commands instead:
 

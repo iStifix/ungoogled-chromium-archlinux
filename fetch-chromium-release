@@ -8,7 +8,7 @@ if [[ -z $VERSION ]]; then
   exit 1
 fi
 
-mkdir chromium-checkout
+mkdir -p chromium-checkout
 cd chromium-checkout
 cat >.gclient <<EOF
 solutions = [
@@ -22,12 +22,18 @@ solutions = [
 ]
 EOF
 
-git clone --depth=1 https://chromium.googlesource.com/chromium/tools/depot_tools
+# Clone depot_tools if not exists
+if [[ ! -d "depot_tools" ]]; then
+  git clone --depth=1 https://chromium.googlesource.com/chromium/tools/depot_tools
+fi
 export PATH+=":$PWD/depot_tools" DEPOT_TOOLS_UPDATE=0
 # system python fails to load six.moves module
 #export VPYTHON_BYPASS='manually managed python not supported by chrome operations'
 
-git clone -b $VERSION --depth=2 https://chromium.googlesource.com/chromium/src
+# Clone chromium source if not exists
+if [[ ! -d "src" ]]; then
+  git clone -b $VERSION --depth=2 https://chromium.googlesource.com/chromium/src
+fi
 gclient sync --no-history --nohooks
 src/build/util/lastchange.py -o src/build/util/LASTCHANGE
 src/build/util/lastchange.py -m GPU_LISTS_VERSION \

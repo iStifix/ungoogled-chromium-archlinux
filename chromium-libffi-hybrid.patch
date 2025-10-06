@@ -1,0 +1,15 @@
+--- a/build/config/linux/libffi/BUILD.gn
++++ b/build/config/linux/libffi/BUILD.gn
+@@ -18,6 +18,12 @@ if (use_system_libffi) {
+   }
+ } else {
+   config("libffi") {
+-    libs = [ "ffi_pic" ]
++    # PATCHED: Use system libffi for x64 builds to avoid glibc incompatibility
++    if (current_cpu == "x64") {
++      libs = [ "ffi" ]  # Use dynamic libffi.so from Arch Linux
++    } else {
++      libs = [ "ffi_pic" ]  # Use static libffi_pic.a from ARM64 sysroot
++    }
+   }
+ }

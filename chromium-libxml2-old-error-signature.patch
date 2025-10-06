@@ -1,0 +1,23 @@
+--- a/third_party/blink/renderer/core/xml/xslt_processor_libxslt.cc
++++ b/third_party/blink/renderer/core/xml/xslt_processor_libxslt.cc
+@@ -68,7 +68,7 @@ void XSLTProcessor::GenericErrorFunc(vo
+   // It would be nice to do something with this error message.
+ }
+
+-void XSLTProcessor::ParseErrorFunc(void* user_data, const xmlError* error) {
++void XSLTProcessor::ParseErrorFunc(void* user_data, xmlError* error) {
+   FrameConsole* console = static_cast<FrameConsole*>(user_data);
+   if (!console)
+     return;
+--- a/third_party/blink/renderer/core/xml/xslt_processor.h
++++ b/third_party/blink/renderer/core/xml/xslt_processor.h
+@@ -77,7 +77,7 @@ class CORE_EXPORT XSLTProcessor final :
+
+   void reset();
+
+-  static void ParseErrorFunc(void* user_data, const xmlError*);
++  static void ParseErrorFunc(void* user_data, xmlError*);
+   static void GenericErrorFunc(void* user_data, const char* msg, ...);
+
+  private:
+   Member<XSLStyleSheet> stylesheet_;

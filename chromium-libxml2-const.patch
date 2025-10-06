@@ -1,0 +1,27 @@
+--- a/third_party/blink/renderer/core/xml/xslt_processor_libxslt.cc
++++ b/third_party/blink/renderer/core/xml/xslt_processor_libxslt.cc
+@@ -136,7 +136,9 @@ void XSLTProcessor::ParseErrorFunc(void* user_data, const xmlError* error) {
+   if (FrameConsole* console = static_cast<FrameConsole*>(user_data))
+     console->AddMessage(console_message);
+ 
+-  xmlSetStructuredErrorFunc(console, ParseErrorFunc);
++  // Cast to handle different libxml2 versions (const vs non-const xmlError*)
++  xmlSetStructuredErrorFunc(console,
++      reinterpret_cast<xmlStructuredErrorFunc>(ParseErrorFunc));
+ }
+ 
+ void XSLTProcessor::SetXSLStyleSheet(XSLStyleSheet* style_sheet) {
+--- a/third_party/blink/renderer/core/xml/xsl_style_sheet_libxslt.cc
++++ b/third_party/blink/renderer/core/xml/xsl_style_sheet_libxslt.cc
+@@ -124,8 +124,10 @@ bool XSLStyleSheet::ParseString(const String& source) {
+   if (LocalFrame* frame = OwnerDocument()->GetFrame())
+     console = &frame->Console();
+ 
++  // Cast to handle different libxml2 versions (const vs non-const xmlError*)
+   XMLDocumentParserScope scope(OwnerDocument(), XSLTProcessor::GenericErrorFunc,
+-                               XSLTProcessor::ParseErrorFunc, console);
++                               reinterpret_cast<xmlStructuredErrorFunc>(XSLTProcessor::ParseErrorFunc),
++                               console);
+   XMLParserInput input(source);
+ 
+   xmlParserCtxtPtr ctxt = xmlCreateMemoryParserCtxt(input.Data(), input.size());

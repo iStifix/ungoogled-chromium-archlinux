@@ -1,0 +1,39 @@
+--- a/build/toolchain/linux/unbundle/BUILD.gn
++++ b/build/toolchain/linux/unbundle/BUILD.gn
+@@ -38,3 +38,35 @@ gcc_toolchain("host") {
+     current_os = current_os
+   }
+ }
++
++# ARM64 cross-compilation toolchain for system clang
++gcc_toolchain("clang_arm64") {
++  cc = "clang"
++  cxx = "clang++"
++  ar = "llvm-ar"
++  nm = "llvm-nm"
++  ld = cxx
++
++  extra_cflags = getenv("CFLAGS")
++  extra_cppflags = getenv("CPPFLAGS")
++  extra_cxxflags = getenv("CXXFLAGS")
++  extra_ldflags = getenv("LDFLAGS")
++
++  toolchain_args = {
++    current_cpu = "arm64"
++    current_os = "linux"
++  }
++}
++
++# x86_64 host toolchain for build tools (cross-compilation)
++gcc_toolchain("clang_x64") {
++  cc = "clang"
++  cxx = "clang++"
++  ar = "llvm-ar"
++  nm = "llvm-nm"
++  ld = cxx
++
++  toolchain_args = {
++    current_cpu = "x64"
++    current_os = "linux"
++  }
++}
