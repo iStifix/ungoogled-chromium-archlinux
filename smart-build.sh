@@ -319,238 +319,61 @@ stage_prepare() {
     fi
 }
 
-# Function to fix sysroot
+# Function to prepare build environment (NO OLD DEBIAN SYSROOT)
 stage_sysroot() {
-    log_stage "STAGE 2: Fix ARM64 Sysroot"
+    log_stage "STAGE 2: Prepare Build Environment"
 
-    local target_sysroot="${SRC_DIR}/build/linux/debian_bullseye_arm64-sysroot"
-    local target_marker="${target_sysroot}/etc/debian_version"
-    local target_opus_pc="${target_sysroot}/usr/lib/pkgconfig/opus.pc"
-    local target_ready=true
-
-    if [[ ! -d "${target_sysroot}" ]] || [[ ! -f "${target_marker}" ]] || [[ ! -f "${target_opus_pc}" ]]; then
-        target_ready=false
-    fi
-
-    local host_ready=true
-    local host_sysroot="${SRC_DIR}/build/linux/debian_bullseye_amd64-sysroot"
-    local build_arch=$(uname -m)
-    if [[ "${build_arch}" =~ ^(x86_64|amd64)$ ]]; then
-        if [[ ! -f "${host_sysroot}/etc/debian_version" ]]; then
-            host_ready=false
-        fi
-    fi
-
-    # Check if sysroot stage is already complete
-    if [[ "$target_ready" == "true" ]] && [[ "$host_ready" == "true" ]]; then
+    # NO DEBIAN SYSROOT - we use system libraries from /usr/lib
+    if [[ -f "$TIMESTAMPS_FILE" ]] && grep -q "^sysroot:" "$TIMESTAMPS_FILE"; then
         log_success "Sysroot stage: UP TO DATE (skipping)"
         return 0
     fi
 
-    log_info "Fixing ARM64 sysroot dependencies..."
+    log_info "Preparing build environment (using system libraries, NOT Debian sysroot)"
 
-    # Create symlink for clang resource directory to fix relative path issues
+    # Create symlink for clang resource directory
     local clang_version=$(clang --version | head -1 | sed 's/.*version \([0-9]*\).*/\1/' || echo "21")
     local clang_link_path="${SRC_DIR}/usr/lib/clang/${clang_version}"
     if [[ ! -e "$clang_link_path" ]]; then
         mkdir -p "${SRC_DIR}/usr/lib/clang"
         ln -sf "/usr/lib/clang/${clang_version}" "$clang_link_path"
-        log_info "Created symlink for clang resource directory: $clang_link_path -> /usr/lib/clang/${clang_version}"
+        log_success "Created clang resource directory symlink"
     fi
 
-    if [[ "$target_ready" == "false" ]]; then
-        log_info "Downloading/updating Debian ARM64 sysroot..."
-        if (cd "$SRC_DIR" && python3 build/linux/sysroot_scripts/install-sysroot.py --arch=arm64); then
-            log_success "Downloaded Debian ARM64 sysroot"
-        else
-            log_error "Failed to download Debian ARM64 sysroot"
-            return 1
-        fi
-    fi
-
-    if [[ "$host_ready" == "false" ]]; then
-        log_info "Downloading/updating Debian AMD64 sysroot (host)..."
-        if (cd "$SRC_DIR" && python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64); then
-            log_success "Downloaded Debian AMD64 sysroot"
-        else
-            log_error "Failed to download Debian AMD64 sysroot"
-            return 1
-        fi
-    fi
-
-    # Fix bindgen clang resource-dir to use absolute path
+    # Patch bindgen to use absolute clang resource-dir
     local bindgen_gni="${SRC_DIR}/build/rust/rust_bindgen_generator.gni"
     if [[ -f "$bindgen_gni" ]]; then
         if grep -q 'rebase_path(clang_base_path + "/lib/clang/"' "$bindgen_gni"; then
-            log_info "Patching rust_bindgen_generator.gni to use absolute clang resource-dir..."
             sed -i '/clang_resource_dir =/,/root_build_dir)/c\    # Patched for cross-compilation: use absolute path instead of relative\n    # because bindgen with relative paths cannot find clang headers\n    clang_resource_dir = clang_base_path + "/lib/clang/" + clang_version' "$bindgen_gni"
             log_success "Patched rust_bindgen_generator.gni"
-        else
-            log_info "rust_bindgen_generator.gni already patched"
         fi
     fi
 
-    # Remove unicode_width from stdlib_files (removed in Rust nightly)
-    local rust_std_build="${SRC_DIR}/build/rust/std/BUILD.gn"
-    if [[ -f "$rust_std_build" ]]; then
-        if grep -q '"unicode_width",' "$rust_std_build"; then
-            log_info "Removing unicode_width from Rust stdlib list (integrated into std in nightly)..."
-            sed -i 's/"unicode_width",/# "unicode_width",  # Removed in Rust nightly, integrated into std/' "$rust_std_build"
-            log_success "Patched build/rust/std/BUILD.gn"
-        else
-            log_info "build/rust/std/BUILD.gn already patched"
-        fi
-    fi
-
-    # Patch run_build_script.py to pass PATH to build scripts
-    # Prepend rustc directory to PATH so build scripts use actual rustc, not rustup proxy
+    # Patch run_build_script.py to pass environment
     local run_build_script="${SRC_DIR}/build/rust/gni_impl/run_build_script.py"
     if [[ -f "$run_build_script" ]]; then
         if ! grep -q '# Patched: Add PATH' "$run_build_script"; then
-            log_info "Patching run_build_script.py to pass PATH environment..."
-            # Use a temporary file for complex multi-line sed
             sed -i '/env\["CARGO_MANIFEST_DIR"\] = os.path.abspath(args.src_dir)/a\    # Patched: Add PATH so build scripts can find rustc (needed for rustversion)\n    # Prepend the rustc binary directory to PATH so build scripts use the actual\n    # rustc binary, not the rustup proxy\n    rustc_dir = os.path.dirname(os.path.abspath(rustc_path))\n    if "PATH" in os.environ:\n      env["PATH"] = rustc_dir + ":" + os.environ["PATH"]\n    else:\n      env["PATH"] = rustc_dir\n    if "RUSTUP_HOME" in os.environ:\n      env["RUSTUP_HOME"] = os.environ["RUSTUP_HOME"]\n    if "CARGO_HOME" in os.environ:\n      env["CARGO_HOME"] = os.environ["CARGO_HOME"]' "$run_build_script"
             log_success "Patched build/rust/gni_impl/run_build_script.py"
-        else
-            log_info "run_build_script.py already patched"
         fi
     fi
 
-    # Patch rustc_wrapper.py to pass RUSTC_BOOTSTRAP environment variable
-    # This is needed to allow stable Rust to use -Z flags (nightly features)
+    # Patch rustc_wrapper.py to pass RUSTC_BOOTSTRAP
     local rustc_wrapper="${SRC_DIR}/build/rust/gni_impl/rustc_wrapper.py"
     if [[ -f "$rustc_wrapper" ]]; then
         if ! grep -q 'RUSTC_BOOTSTRAP' "$rustc_wrapper"; then
-            log_info "Patching rustc_wrapper.py to pass RUSTC_BOOTSTRAP..."
-            # Find the line with 'env = os.environ.copy()' and add RUSTC_BOOTSTRAP after it
-            # Python uses 2-space indentation in this file
             sed -i '/env = os.environ.copy()/a\  # Patched: Allow stable Rust to use -Z flags\n  env["RUSTC_BOOTSTRAP"] = "1"' "$rustc_wrapper"
             log_success "Patched build/rust/gni_impl/rustc_wrapper.py"
-        else
-            log_info "rustc_wrapper.py already patched"
         fi
     fi
 
-    # Patch Rust allocator for multiple Rust versions (adds both alloc shim symbols)
-    # Chromium 140 has _v2 by default, but Rust 1.86.0 stable stdlib expects non-_v2
+    # Patch Rust allocator
     local allocator_lib="${SRC_DIR}/build/rust/allocator/lib.rs"
     if [[ -f "$allocator_lib" ]]; then
-        # Check if we need to add the non-_v2 version (for Rust 1.86.0 stable)
         if ! grep -q 'fn __rust_no_alloc_shim_is_unstable() {}' "$allocator_lib"; then
-            log_info "Patching Rust allocator for Rust 1.86.0 stable compatibility..."
-
-            # Add non-_v2 version of alloc shim (before the _v2 version)
-            # The allocator already has __rust_alloc_error_handler_should_panic (non-_v2)
-            # but is missing __rust_no_alloc_shim_is_unstable (non-_v2)
             sed -i '/fn __rust_no_alloc_shim_is_unstable_v2() {}/i\
     /// Stable Rust 1.86.0 stdlib expects this symbol (without _v2)\n    #[rustc_std_internal_symbol]\n    #[linkage = "weak"]\n    fn __rust_no_alloc_shim_is_unstable() {}\n' "$allocator_lib"
-
             log_success "Added __rust_no_alloc_shim_is_unstable to build/rust/allocator/lib.rs"
-        else
-            log_info "build/rust/allocator/lib.rs already has both alloc shim symbol versions"
-        fi
-    fi
-
-    # Fix HarfBuzz submodule after domain substitution
-    # Domain substitution removes all source files from harfbuzz-ng/src
-    # We need to restore them from the git submodule
-    local harfbuzz_src="${SRC_DIR}/third_party/harfbuzz-ng/src"
-    if [[ -d "$harfbuzz_src" ]] && [[ ! -f "$harfbuzz_src/src/hb-cplusplus.hh" ]]; then
-        log_info "Restoring HarfBuzz submodule after domain substitution..."
-        (
-            cd "$SRC_DIR"
-            rm -rf third_party/harfbuzz-ng/src
-            git submodule update --init --recursive third_party/harfbuzz-ng/src
-        )
-        if [[ -f "$harfbuzz_src/src/hb-cplusplus.hh" ]]; then
-            log_success "Restored HarfBuzz source files from git submodule"
-        else
-            log_error "Failed to restore HarfBuzz submodule"
-            return 1
-        fi
-    else
-        log_info "HarfBuzz submodule already present"
-    fi
-
-    # Disable use_system_harfbuzz because system version is too old
-    local harfbuzz_gni="${SRC_DIR}/third_party/harfbuzz-ng/harfbuzz.gni"
-    if [[ -f "$harfbuzz_gni" ]]; then
-        if grep -q "use_system_harfbuzz = true" "$harfbuzz_gni"; then
-            log_info "Disabling use_system_harfbuzz (system version too old)..."
-            sed -i 's/use_system_harfbuzz = true/use_system_harfbuzz = false  # Disabled: system harfbuzz too old/' "$harfbuzz_gni"
-            log_success "Disabled use_system_harfbuzz in harfbuzz.gni"
-        else
-            log_info "use_system_harfbuzz already disabled"
-        fi
-    fi
-
-    # libxml2/libxslt const incompatibility is avoided by using bundled versions
-    # (removed from system-libraries list above)
-
-    # Disable BrotliDecoderAttachDictionary for old Brotli (Debian Bullseye)
-    # System Brotli doesn't have BrotliDecoderAttachDictionary function
-    local brotli_source="${SRC_DIR}/net/filter/brotli_source_stream.cc"
-    if [[ -f "$brotli_source" ]] && grep -q "BrotliDecoderAttachDictionary" "$brotli_source" | head -1 | grep -qv "^//"; then
-        log_info "Disabling BrotliDecoderAttachDictionary for old Brotli..."
-        # Comment out the dictionary attachment code (lines 45-50)
-        sed -i '/if (dictionary_) {/,/CHECK(result);/s/^/\/\/ DISABLED for old Brotli: /' "$brotli_source"
-        log_success "Disabled BrotliDecoderAttachDictionary in brotli_source_stream.cc"
-    else
-        log_info "BrotliDecoderAttachDictionary already disabled or not needed"
-    fi
-
-    # Additional AMD64 sysroot fixes for host build tools
-    local host_sysroot_pkgconfig="${SRC_DIR}/build/linux/debian_bullseye_amd64-sysroot/usr/lib/pkgconfig"
-
-    # Update harfbuzz to match system version (Debian Bullseye has 2.7.4, we need 12.0.0+)
-    if [[ -d "${host_sysroot_pkgconfig}" ]]; then
-        if [[ -f "/usr/lib/pkgconfig/harfbuzz.pc" ]]; then
-            install -Dm644 /usr/lib/pkgconfig/harfbuzz.pc "${host_sysroot_pkgconfig}/harfbuzz.pc"
-            log_info "Updated harfbuzz.pc in AMD64 sysroot from host system"
-        fi
-    fi
-
-    if [[ -d "${host_sysroot_pkgconfig}" ]] && [[ ! -f "${host_sysroot_pkgconfig}/harfbuzz-subset.pc" ]]; then
-        if [[ -f "/usr/lib/pkgconfig/harfbuzz-subset.pc" ]]; then
-            install -Dm644 /usr/lib/pkgconfig/harfbuzz-subset.pc "${host_sysroot_pkgconfig}/harfbuzz-subset.pc"
-            log_info "Added harfbuzz-subset.pc to AMD64 sysroot from host system"
-        else
-            cat > "${host_sysroot_pkgconfig}/harfbuzz-subset.pc" <<'EOF'
-prefix=/usr
-exec_prefix=/usr
-libdir=/usr/lib
-includedir=/usr/include
-
-Name: harfbuzz-subset
-Description: HarfBuzz text shaping library (subset)
-Version: 8.3.0
-Requires.private: harfbuzz
-Libs: -L${libdir} -lharfbuzz-subset
-Cflags: -I${includedir}/harfbuzz
-EOF
-            log_info "Created minimal harfbuzz-subset.pc in AMD64 sysroot"
-        fi
-    fi
-
-    if [[ -d "${host_sysroot_pkgconfig}" ]] && [[ ! -f "${host_sysroot_pkgconfig}/libsharpyuv.pc" ]]; then
-        if [[ -f "/usr/lib/pkgconfig/libsharpyuv.pc" ]]; then
-            install -Dm644 /usr/lib/pkgconfig/libsharpyuv.pc "${host_sysroot_pkgconfig}/libsharpyuv.pc"
-            log_info "Added libsharpyuv.pc to AMD64 sysroot from host system"
-        else
-            cat > "${host_sysroot_pkgconfig}/libsharpyuv.pc" <<'EOF'
-prefix=/usr
-exec_prefix=/usr
-libdir=/usr/lib
-includedir=/usr/include
-
-Name: libsharpyuv
-Description: WebP RGB to YUV converter
-Version: 1.4.0
-Requires.private:
-Libs: -L${libdir} -lsharpyuv
-Cflags: -I${includedir}/sharpyuv
-EOF
-            log_info "Created minimal libsharpyuv.pc in AMD64 sysroot"
         fi
     fi
 
@@ -687,35 +510,18 @@ stage_configure() {
     # Reset GN library overrides first
     python3 build/linux/unbundle/replace_gn_files.py --undo >/dev/null 2>&1 || true
 
-    # Restore brotli/harfbuzz/libdrm to bundled versions BEFORE replace_gn_files.py
-    # (Debian Bullseye sysroot has too old versions)
-    log_info "Restoring bundled brotli, harfbuzz, and libdrm (Debian Bullseye versions too old)"
-    git restore third_party/brotli/ third_party/harfbuzz-ng/harfbuzz.gni third_party/libdrm/ 2>/dev/null || true
-
-    # Use system libraries for everything EXCEPT brotli, harfbuzz, libdrm, libxml, libxslt
-    # This allows build tools to link against /usr/lib (Arch Linux) instead of sysroot (Debian Bullseye)
-    # which avoids dynamic linker incompatibility (elf_machine_rela_relative errors)
-    # libxml/libxslt: Use bundled versions to avoid const incompatibility between
-    #   Arch libxml2 2.15.0 (const xmlError*) vs Debian Bullseye 2.9.10 (non-const)
-    log_info "Configuring to use system libraries (except brotli, harfbuzz, libdrm, libxml, libxslt)"
+    # Use ALL system libraries from /usr/lib (modern Arch Linux)
+    # NO OLD DEBIAN BULLSEYE SYSROOT!
+    log_info "Configuring to use ALL modern system libraries from /usr/lib"
     python3 build/linux/unbundle/replace_gn_files.py --system-libraries \
-        fontconfig freetype libjpeg libpng libwebp \
-        opus zlib 2>&1 | head -5
+        fontconfig freetype harfbuzz libjpeg libpng libwebp libxml libxslt \
+        opus flac dav1d libvpx zlib brotli 2>&1 | head -5
 
-    # Create compatibility symlinks: Build tools expect Debian naming but we give them Arch libraries
-    # libjpeg: sysroot uses .62, Arch uses .8 -> symlink .62 to Arch version
-    # libffi_pic.a: Host toolchain (x86_64) needs static PIC version from AMD64 sysroot
-    log_info "Creating library compatibility symlinks for build tools"
-    sudo ln -sf /usr/lib/libjpeg.so.8.3.2 /usr/lib/libjpeg.so.62 2>/dev/null || true
-    sudo ln -sf "${SRC_DIR}/build/linux/debian_bullseye_amd64-sysroot/usr/lib/x86_64-linux-gnu/libffi_pic.a" /usr/lib/libffi_pic.a 2>/dev/null || true
-
-    # Apply FLAC compatibility patch for Debian Bullseye
-    if grep -q "FLAC__STREAM_DECODER_ERROR_STATUS_BAD_METADATA" media/audio/flac_audio_handler.cc 2>/dev/null; then
-        log_info "Applying FLAC compatibility patch for Debian Bullseye"
-        sed -i 's/FLAC__STREAM_DECODER_ERROR_STATUS_BAD_METADATA/FLAC__STREAM_DECODER_ERROR_STATUS_UNPARSEABLE_STREAM/g' media/audio/flac_audio_handler.cc
-    fi
+    log_success "Configured to use modern Arch Linux libraries"
 
     # Run gn configuration with system toolchains and ungoogled flags
+    # IMPORTANT: use_sysroot=false means NO DEBIAN BULLSEYE!
+    # We use system libraries from /usr/lib (Arch Linux packages)
     local _flags=(
         "target_os=\"linux\""
         "target_cpu=\"arm64\""
@@ -725,10 +531,10 @@ stage_configure() {
         "symbol_level=0"
         "treat_warnings_as_errors=false"
         "fatal_linker_warnings=false"
+        "use_sysroot=false"
         "disable_fieldtrial_testing_config=true"
         "blink_enable_generated_code_formatting=false"
         "use_custom_libcxx=true"
-        "use_sysroot=true"
         "use_system_libffi=true"
         "use_vaapi=true"
         "rtc_use_pipewire=true"
@@ -783,56 +589,13 @@ stage_configure() {
         return 1
     fi
 
-    # Cross-compilation fix: Detect x86_64 → ARM64 and fix sysroot usage
-    if [[ "$(uname -m)" == "x86_64" ]] && grep -q 'target_cpu = "arm64"' out/Release/args.gn; then
-        log_info "Cross-compilation detected (x86_64 host → ARM64 target)"
-
-        # Check if fix is needed (use_sysroot = true means host tools use Debian sysroot)
-        if grep -q 'use_sysroot = true' out/Release/args.gn; then
-            log_warning "Detected use_sysroot=true - this causes library version conflicts"
-            log_info "Applying cross-compilation fix..."
-
-            # Fix 1: Host tools should NOT use Debian Bullseye sysroot
-            # (avoids glibc/library version conflicts with Arch Linux)
-            sed -i 's/use_sysroot = true/use_sysroot = false/' out/Release/args.gn
-
-            # Fix 2: Target binaries MUST still use ARM64 sysroot
-            if ! grep -q 'target_sysroot' out/Release/args.gn; then
-                echo '' >> out/Release/args.gn
-                echo '# Cross-compilation: ARM64 target uses Debian sysroot, x86_64 host tools use system libraries' >> out/Release/args.gn
-                echo 'target_sysroot = "//build/linux/debian_bullseye_arm64-sysroot"' >> out/Release/args.gn
-            fi
-
-            log_success "Applied cross-compilation sysroot fix"
-
-            # Regenerate build files with corrected configuration
-            log_info "Regenerating build files with cross-compilation fix..."
-            if "${gn_cmd}" gen out/Release; then
-                log_success "Build files regenerated with correct sysroot configuration"
-            else
-                cd - > /dev/null
-                log_error "Failed to regenerate build files after cross-compilation fix"
-                return 1
-            fi
-        else
-            log_info "Cross-compilation fix already applied (use_sysroot=false)"
-        fi
-    fi
-
-    # Always add Rust sysroot configuration to args.gn after initial generation
+    # Add Rust sysroot configuration to args.gn after initial generation
     if [[ -n "$rust_sysroot" ]] && [[ -d "$rust_sysroot" ]]; then
-        log_info "Configuring Rust toolchain: $rustc_version at $rust_sysroot"
-
-        # Remove any existing Rust configuration to avoid duplicates
         sed -i '/^rust_sysroot_absolute/d' out/Release/args.gn
         sed -i '/^rustc_version/d' out/Release/args.gn
-
-        # Add Rust configuration
         echo "rust_sysroot_absolute = \"$rust_sysroot\"" >> out/Release/args.gn
         echo "rustc_version = \"$rustc_version\"" >> out/Release/args.gn
         log_success "Added Rust configuration to args.gn"
-
-        # Regenerate build.ninja with Rust configuration
         if "${gn_cmd}" gen out/Release; then
             log_success "Regenerated build files with Rust configuration"
         else
@@ -840,11 +603,9 @@ stage_configure() {
             log_error "Configure stage: Failed to regenerate with Rust config"
             return 1
         fi
-    else
-        log_warning "Rust sysroot not found at $rust_sysroot, skipping Rust configuration"
     fi
 
-    # Add Qt6 configuration for KDE integration (with cross-compilation support)
+    # Add Qt6 configuration for KDE integration
     log_info "Configuring Qt6 support for KDE Plasma integration"
     sed -i '/^use_qt5/d' out/Release/args.gn
     sed -i '/^use_qt6/d' out/Release/args.gn
@@ -862,32 +623,6 @@ stage_configure() {
         cd - > /dev/null
         log_error "Configure stage: Failed to regenerate with Qt6 config"
         return 1
-    fi
-
-    # Verify cross-compilation configuration is correct
-    if [[ "$(uname -m)" == "x86_64" ]] && grep -q 'target_cpu = "arm64"' out/Release/args.gn; then
-        log_info "Verifying cross-compilation configuration..."
-
-        # Verify args.gn configuration directly (more reliable than ninja -t commands)
-        # Check 1: use_sysroot must be false (host tools use system libraries)
-        if grep -q 'use_sysroot = true' out/Release/args.gn; then
-            log_error "VERIFICATION FAILED: use_sysroot is still true!"
-            log_error "Host x64 tools will use Debian sysroot (causes library conflicts)"
-            cd - > /dev/null
-            return 1
-        fi
-
-        # Check 2: target_sysroot must be set for ARM64 target
-        if ! grep -q 'target_sysroot.*debian_bullseye_arm64' out/Release/args.gn; then
-            log_error "VERIFICATION FAILED: target_sysroot is not set for ARM64!"
-            log_error "ARM64 target will not use correct sysroot for cross-compilation"
-            cd - > /dev/null
-            return 1
-        fi
-
-        log_success "✓ Cross-compilation configuration verified correctly"
-        log_success "  - use_sysroot = false (x86_64 host tools use /usr/lib)"
-        log_success "  - target_sysroot set to debian_bullseye_arm64-sysroot"
     fi
 
     cd - > /dev/null
@@ -910,10 +645,6 @@ stage_compile() {
     fi
 
     log_info "Compiling target: $target"
-
-    # Create compatibility symlinks for build tools (in case configure was skipped)
-    # libjpeg: sysroot uses .62, Arch uses .8 -> symlink .62 to Arch version
-    sudo ln -sf /usr/lib/libjpeg.so.8.3.2 /usr/lib/libjpeg.so.62 2>/dev/null || true
 
     # Clean old Rust stdlib artifacts that may have wrong paths FIRST
     # These .d files cache paths to Rust libraries and can have stale /root/.rustup paths

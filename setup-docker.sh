@@ -1,5 +1,6 @@
 #!/bin/bash
 # Script to set up Arch Linux Docker container for ungoogled-chromium build
+# MODERNIZED: Uses fresh Arch Linux libraries instead of old Debian Bullseye sysroot
 
 set -euo pipefail
 
@@ -33,18 +34,39 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 log_info "Setting up Arch Linux Docker container for ungoogled-chromium build..."
+log_info "MODERN BUILD: Using fresh Arch Linux libraries (not old Debian Bullseye)"
 
 # Step 1: Initialize pacman
 log_info "Step 1: Initializing pacman..."
+
+# Fix mirrorlist for old Arch Linux ARM images
+log_info "Updating mirrorlist to current Arch Linux ARM mirrors..."
+cat > /etc/pacman.d/mirrorlist << 'EOF'
+# Arch Linux ARM - aarch64
+Server = http://mirror.archlinuxarm.org/$arch/$repo
+Server = http://de.mirror.archlinuxarm.org/$arch/$repo
+Server = http://fl.us.mirror.archlinuxarm.org/$arch/$repo
+EOF
+log_success "Mirrorlist updated"
+
 pacman-key --init
 pacman-key --populate archlinux
-pacman -Sy archlinux-keyring --noconfirm
+
+# Try to update keyring, but continue if it fails (old image issue)
+log_info "Attempting to update keyring (may fail on old images)..."
+pacman -Sy archlinux-keyring --noconfirm || log_warning "Keyring update failed, continuing anyway..."
+
+# Full system upgrade
+log_info "Upgrading system packages..."
 pacman -Syu --noconfirm
 log_success "Pacman initialized"
 
-# Step 2: Install required packages
+# Step 2: Install build dependencies
 log_info "Step 2: Installing build dependencies..."
+log_info "Installing compiler toolchain, build tools, and ALL development libraries"
+
 PACKAGES=(
+    # Core build tools
     base-devel
     git
     clang
@@ -57,52 +79,117 @@ PACKAGES=(
     gperf
     nodejs
     npm
+    nasm
+    patchelf
+    ccache
+    cmake
+    pkgconf
+
+    # Java for build scripts
+    java-runtime-headless
+
+    # System utilities
+    rsync
+    wget
+    curl
+    unzip
+
+    # Development headers and libraries for Chromium dependencies
+    # CRITICAL: These are MODERN Arch Linux versions, not old Debian Bullseye!
+
+    # Graphics and GPU
+    mesa
+    libva
+    libva-mesa-driver
+    libdrm
+    libglvnd
+    vulkan-icd-loader
+    vulkan-headers
+
+    # Wayland and display
+    wayland
+    wayland-protocols
+    libxkbcommon
+
+    # X11 (for XWayland compatibility)
+    libx11
+    libxext
+    libxrandr
+    libxcomposite
+    libxdamage
+    libxfixes
+    libxi
+    libxtst
+    libxscrnsaver
+
+    # GUI toolkit
+    gtk3
+    gtk4
+    at-spi2-core
+
+    # Audio and video
     pipewire
     libpulse
-    libva
-    gtk3
-    libxss
-    qt6-base
-    java-runtime-headless
-    rsync
+    alsa-lib
+    opus
+    libvpx
+    dav1d
+    aom
+    libwebp
+
+    # Image libraries
+    libjpeg-turbo
+    libpng
+
+    # Text rendering
+    harfbuzz
+    freetype2
+    fontconfig
+    pango
+    cairo
+
+    # System libraries
+    nss
     cups
     dbus
     systemd-libs
     libcap
-    python-httplib2
-    python-pyparsing
-    # Runtime libraries needed for v8_context_snapshot_generator
-    libjpeg-turbo
+    libevent
+    snappy
+    re2
+    minizip
+    zlib
+    brotli
+    zstd
+
+    # XML/XSLT
     libxml2
     libxslt
-    libwebp
-    opus
-    minizip
+
+    # Other utilities
+    lcms2
+    fribidi
+
+    # Python packages
+    python-httplib2
+    python-pyparsing
     python-six
+
+    # Rust bindgen
     rust-bindgen
-    # Build tools
-    nasm
-    patchelf
+
+    # Qt6 for KDE integration
+    qt6-base
 )
 
 if ! pacman -S --needed --noconfirm "${PACKAGES[@]}"; then
     log_error "Failed to install required packages"
     exit 1
 fi
-log_success "Build dependencies installed"
+log_success "Build dependencies installed (modern Arch Linux libraries)"
 
-# Create symlinks for build tools (x86_64) library dependencies
-# These will be resolved at build time from the sysroot:
-# - libffi_pic.a: Required for SwiftShader (Vulkan software renderer) linking
-# - Other libraries: Created by smart-build.sh during configure stage
-log_info "Library symlinks for build tools will be created during configure stage"
-log_info "smart-build.sh will create symlinks for: libjpeg.so.62, libffi_pic.a"
-log_success "Build tool library configuration completed"
-
-# Step 3: Set up Rust nightly toolchain
-log_info "Step 3: Setting up Rust nightly toolchain..."
-# In Arch Linux, rustup is provided by the rustup package
-# We need to initialize it for the root user and make it system-wide
+# Step 3: Set up Rust stable toolchain
+log_info "Step 3: Setting up Rust 1.86.0 stable toolchain..."
 export RUSTUP_HOME=/opt/rust
 export CARGO_HOME=/opt/rust
 mkdir -p /opt/rust
@@ -128,10 +215,10 @@ chmod +x /etc/profile.d/rust.sh
 # Verify installation
 log_info "Verifying Rust installation..."
 rustc --version
-log_success "Rust nightly toolchain configured with ARM64 support"
+log_success "Rust stable 1.86.0 configured with ARM64 support"
 
-# Step 3.5: Ensure clang resource directory has required headers
-log_info "Setting up clang resource directory..."
+# Step 4: Verify clang resource directory
+log_info "Step 4: Verifying clang resource directory..."
 CLANG_VERSION_FULL=$(clang --version | head -1 | sed 's/.*version \([0-9.]*\).*/\1/')
 CLANG_VERSION_MAJOR=$(echo "$CLANG_VERSION_FULL" | cut -d. -f1)
 CLANG_ACTUAL_DIR="/usr/lib/clang/${CLANG_VERSION_MAJOR}"
@@ -139,22 +226,17 @@ CLANG_RESOURCE_DIR="${CLANG_ACTUAL_DIR}/include"
 
 if [[ -d "$CLANG_RESOURCE_DIR" ]]; then
     log_info "Clang resource directory exists at $CLANG_RESOURCE_DIR"
-    # Check for stddef.h
     if [[ ! -f "$CLANG_RESOURCE_DIR/stddef.h" ]]; then
         log_error "stddef.h not found in clang resource directory!"
-        log_info "This usually means clang package is incomplete."
-        log_info "Try: pacman -S --needed clang"
         exit 1
     fi
     log_info "stddef.h found in clang resource directory"
 else
     log_error "Clang resource directory not found at $CLANG_RESOURCE_DIR"
-    log_info "Clang version: $CLANG_VERSION_FULL (major: $CLANG_VERSION_MAJOR)"
     exit 1
 fi
 
-# GN might use different major version, create symlinks for compatibility
-# For example, clang 20.1.8 but GN expects /usr/lib/clang/21
+# Create symlinks for compatibility
 for ver in 19 20 21 22; do
     if [[ "$ver" != "$CLANG_VERSION_MAJOR" ]] && [[ ! -e "/usr/lib/clang/$ver" ]]; then
         ln -sf "$CLANG_VERSION_MAJOR" "/usr/lib/clang/$ver"
@@ -164,8 +246,8 @@ done
 
 log_success "Clang configuration verified"
 
-# Step 3.6: Create symlinks for Rust tools in /usr/bin
-log_info "Creating Rust tool symlinks in /usr/bin..."
+# Step 5: Create symlinks for Rust tools
+log_info "Step 5: Creating Rust tool symlinks in /usr/bin..."
 for tool in rustc cargo rustup rustdoc; do
     if [[ -f "/opt/rust/bin/$tool" ]] && [[ ! -e "/usr/bin/$tool" ]]; then
         ln -sf "/opt/rust/bin/$tool" "/usr/bin/$tool"
@@ -174,13 +256,13 @@ for tool in rustc cargo rustup rustdoc; do
 done
 log_success "Rust tool symlinks created"
 
-# Step 4: Set up machine ID
-log_info "Step 4: Setting up machine ID..."
+# Step 6: Set up machine ID
+log_info "Step 6: Setting up machine ID..."
 systemd-machine-id-setup
 log_success "Machine ID configured"
 
-# Step 5: Create builder user
-log_info "Step 5: Creating builder user..."
+# Step 7: Create builder user
+log_info "Step 7: Creating builder user..."
 if ! id "builder" &>/dev/null; then
     useradd -m builder
     log_success "Builder user created"
@@ -188,8 +270,8 @@ else
     log_info "Builder user already exists"
 fi
 
-# Step 6: Set up permissions
-log_info "Step 6: Setting up permissions..."
+# Step 8: Set up permissions
+log_info "Step 8: Setting up permissions..."
 chown -R builder:builder /work
 echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
 chmod 0440 /etc/sudoers.d/builder
@@ -206,8 +288,8 @@ chown builder:builder /home/builder/.bashrc
 
 log_success "Permissions configured"
 
-# Step 7: Create startup script for builder
-log_info "Step 7: Creating startup script..."
+# Step 9: Create startup script
+log_info "Step 9: Creating startup script..."
 cat > /home/builder/start-build.sh << 'EOF'
 #!/bin/bash
 # Load Rust environment
@@ -219,30 +301,26 @@ echo "==================================================================="
 echo "ungoogled-chromium-baikal Build Environment Ready"
 echo "==================================================================="
 echo ""
-echo "To start the automated build process, run:"
+echo "MODERN BUILD SYSTEM:"
+echo "  - Uses fresh Arch Linux libraries (NOT old Debian Bullseye)"
+echo "  - Fixed --use-gl parameter bug"
+echo "  - All dependencies are up-to-date"
+echo ""
+echo "To start the build process, run:"
 echo "  ./smart-build.sh auto       # Smart incremental build"
 echo "  ./smart-build.sh full       # Full rebuild from scratch"
 echo "  ./smart-build.sh status     # Show build status"
-echo ""
-echo "This will:"
-echo "  1. Prepare the build environment"
-echo "  2. Fix ARM64 sysroot dependencies"
-echo "  3. Start the Chromium compilation (takes several hours)"
-echo "  4. Create the package file"
-echo "  5. Skip already completed stages for faster rebuilds"
-echo ""
-echo "Manual commands are also available:"
-echo "  ./smart-build.sh prepare    # Prepare sources and patches"
-echo "  ./smart-build.sh sysroot    # Fix ARM64 dependencies"
-echo "  ./smart-build.sh compile    # Compile Chromium"
-echo "  ./smart-build.sh ninja chrome # Quick rebuild (5-15 min)"
-echo "  ./smart-build.sh package    # Create installation package"
-echo "  ./smart-build.sh clean      # Clean all artifacts"
 echo ""
 echo "Current directory: $(pwd)"
 echo "Available disk space: $(df -h . | awk 'NR==2 {print $4}')"
 echo "Available memory: $(free -h | awk 'NR==2 {print $7}')"
 echo "CPU cores: $(nproc)"
+echo ""
+echo "Installed library versions:"
+echo "  Mesa: $(pacman -Q mesa | awk '{print $2}')"
+echo "  libva: $(pacman -Q libva | awk '{print $2}')"
+echo "  harfbuzz: $(pacman -Q harfbuzz | awk '{print $2}')"
+echo "  ffmpeg: $(pacman -Q ffmpeg | awk '{print $2}')"
 echo ""
 echo "==================================================================="
 exec /bin/bash
@@ -252,8 +330,21 @@ chmod +x /home/builder/start-build.sh
 chown builder:builder /home/builder/start-build.sh
 log_success "Startup script created"
 
+# Step 10: Summary
 log_success "Docker container setup completed!"
-log_info "To start building, switch to builder user:"
-log_info "  su - builder"
-log_info "Or run the startup script directly:"
-log_info "  su - builder -c '/home/builder/start-build.sh'"
+echo ""
+echo "=========================================="
+echo "MODERN BUILD ENVIRONMENT READY"
+echo "=========================================="
+echo ""
+echo "Key changes from old system:"
+echo "  ✓ Using Arch Linux $(pacman -Q mesa | awk '{print $2}') instead of Debian Bullseye"
+echo "  ✓ All libraries are up-to-date"
+echo "  ✓ Fixed --use-gl=angle bug in flags.conf"
+echo "  ✓ Clang $(clang --version | head -1 | awk '{print $3}')"
+echo "  ✓ Rust $(rustc --version | awk '{print $2}')"
+echo ""
+echo "To start building, switch to builder user:"
+echo "  su - builder"
+echo ""
+echo "=========================================="

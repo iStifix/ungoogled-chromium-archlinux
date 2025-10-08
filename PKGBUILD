@@ -24,9 +24,13 @@ pkgdesc="A lightweight approach to removing Google web service dependency"
 arch=('x86_64' 'aarch64')
 url="https://github.com/ungoogled-software/ungoogled-chromium"
 license=('BSD-3-Clause')
+# MODERNIZED: Added missing dependencies for modern Arch Linux build
 depends=('gtk3' 'nss' 'alsa-lib' 'xdg-utils' 'libxss' 'libcups' 'libgcrypt'
-         'ttf-liberation' 'systemd' 'dbus' 'libpulse' 'pciutils' 'libva'
-         'libffi' 'desktop-file-utils' 'hicolor-icon-theme')
+         'ttf-liberation' 'systemd' 'dbus' 'libpulse' 'pciutils' 'libva' 'libva-mesa-driver'
+         'libffi' 'desktop-file-utils' 'hicolor-icon-theme' 'mesa' 'libdrm' 'aom' 'dav1d'
+         'libvpx' 'opus' 'flac' 'harfbuzz' 'freetype2' 'fontconfig' 'libpng' 'libjpeg-turbo'
+         'libwebp' 'libxml2' 'libxslt' 'brotli' 'zlib' 'zstd' 'wayland' 'wayland-protocols'
+         'libxkbcommon')
 makedepends=('python' 'gn' 'ninja' 'clang' 'lld' 'gperf' 'nodejs' 'pipewire'
              'rustup' 'rust-bindgen' 'qt6-base' 'java-runtime-headless'
              'git' 'cups')
@@ -90,9 +94,10 @@ fi
 
 # Possible replacements are listed in build/linux/unbundle/replace_gn_files.py
 # Keys are the names in the above script; values are the dependencies in Arch
+# MODERNIZED: Using ALL modern system libraries (no old Debian Bullseye sysroot)
 declare -gA _system_libs=(
   [brotli]=brotli
-  #[dav1d]=dav1d
+  [dav1d]=dav1d
   #[ffmpeg]=ffmpeg    # YouTube playback stopped working in Chromium 120
   [flac]=flac
   [fontconfig]=fontconfig
@@ -100,11 +105,11 @@ declare -gA _system_libs=(
   [harfbuzz-ng]=harfbuzz
   #[icu]=icu
   #[jsoncpp]=jsoncpp  # needs libstdc++
-  #[libaom]=aom
+  #[libaom]=aom       # Commented out but aom is in depends
   #[libavif]=libavif  # needs -DAVIF_ENABLE_EXPERIMENTAL_GAIN_MAP=ON
   [libjpeg]=libjpeg-turbo
   [libpng]=libpng
-  #[libvpx]=libvpx
+  [libvpx]=libvpx
   [libwebp]=libwebp
   [libxml]=libxml2
   [libxslt]=libxslt
@@ -114,11 +119,8 @@ declare -gA _system_libs=(
   #[woff2]=woff2      # needs libstdc++
   [zlib]=minizip
 )
-if [[ ${CARCH:-$(uname -m)} =~ ^(aarch64|arm64)$ ]]; then
-  for _key in "${!_system_libs[@]}"; do
-    unset "_system_libs[$_key]"
-  done
-fi
+# REMOVED: Old code that disabled all system_libs for ARM64
+# We now use modern Arch Linux libraries for ALL architectures
 
 _unwanted_bundled_libs=(
   $(printf "%s\n" ${!_system_libs[@]} | sed 's/^libjpeg$/&_turbo/')
@@ -141,10 +143,9 @@ prepare() {
     x86_64|amd64) _target_cpu=x64 ;;
   esac
 
-  if [[ $_target_cpu == arm64 ]]; then
-    ./build/linux/sysroot_scripts/install-sysroot.py --arch=arm64
-    install -Dm755 /usr/bin/cups-config build/linux/debian_bullseye_arm64-sysroot/usr/bin/cups-config
-  fi
+  # REMOVED: Old Debian Bullseye sysroot download for ARM64
+  # We now use system libraries from /usr/lib for all architectures
+  # No need to download old sysroot or install cups-config to it
 
   # Allow building against system libraries in official builds
   sed -i 's/OFFICIAL_BUILD/GOOGLE_CHROME_BUILD/' \
