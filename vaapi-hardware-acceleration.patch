@@ -1,0 +1,68 @@
+diff --git a/build/linux/unbundle/libvpx.gn b/build/linux/unbundle/libvpx.gn
+index 0000000..1111111 100644
+--- a/build/linux/unbundle/libvpx.gn
++++ b/build/linux/unbundle/libvpx.gn
+@@ -29,8 +29,28 @@ shim_headers("libvpx_shim") {
+ source_set("libvpx") {
+   deps = [ ":libvpx_shim" ]
+   public_configs = [ ":system_libvpx" ]
+ }
+
+-# Stub for VA-API dependency (rate control functions are in system libvpx)
+-source_set("libvpxrc") {
++# Rate control library for VA-API hardware acceleration
++# System libvpx doesn't expose internal RTC APIs, so we compile minimal sources
++static_library("libvpxrc") {
++  sources = [
++    "source/libvpx/vp8/vp8_ratectrl_rtc.h",
++    "source/libvpx/vp8/vp8_ratectrl_rtc.cc",
++    "source/libvpx/vp9/ratectrl_rtc.h",
++    "source/libvpx/vp9/ratectrl_rtc.cc",
++  ]
++
++  include_dirs = [
++    "source/libvpx",
++    "source/config",
++  ]
++
+   public_deps = [ ":libvpx" ]
+   public_configs = [ ":system_libvpx" ]
++
++  configs -= [ "//build/config/compiler:chromium_code" ]
++  configs += [ "//build/config/compiler:no_chromium_code" ]
++
++  defines = [ "WEBRTC_POSIX" ]
+ }
+diff --git a/build/linux/unbundle/libaom.gn b/build/linux/unbundle/libaom.gn
+index 2222222..3333333 100644
+--- a/build/linux/unbundle/libaom.gn
++++ b/build/linux/unbundle/libaom.gn
+@@ -31,8 +31,26 @@ shim_headers("aom_shim") {
+ source_set("libaom") {
+   deps = [ ":aom_shim" ]
+   public_configs = [ ":system_aom" ]
+ }
+
+-# Stub for VA-API dependency (rate control functions are in system libaom)
+-source_set("libaomrc") {
++# Rate control library for VA-API hardware acceleration
++# System libaom doesn't expose internal RTC APIs, so we compile minimal sources
++static_library("libaomrc") {
++  sources = [
++    "source/libaom/av1/ratectrl_rtc.h",
++    "source/libaom/av1/ratectrl_rtc.cc",
++  ]
++
++  include_dirs = [
++    "source/libaom",
++    "source/config",
++  ]
++
+   public_deps = [ ":libaom" ]
+   public_configs = [ ":system_aom" ]
++
++  configs -= [ "//build/config/compiler:chromium_code" ]
++  configs += [ "//build/config/compiler:no_chromium_code" ]
++
++  defines = [ "WEBRTC_POSIX" ]
+ }

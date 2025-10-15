@@ -49,17 +49,21 @@ Server = http://fl.us.mirror.archlinuxarm.org/$arch/$repo
 EOF
 log_success "Mirrorlist updated"
 
+# Initialize and populate keys (including Arch Linux ARM)
+log_info "Initializing pacman keyring with Arch Linux ARM keys..."
 pacman-key --init
-pacman-key --populate archlinux
+pacman-key --populate archlinux archlinuxarm
+log_success "Keyring initialized"
 
-# Try to update keyring, but continue if it fails (old image issue)
-log_info "Attempting to update keyring (may fail on old images)..."
-pacman -Sy archlinux-keyring --noconfirm || log_warning "Keyring update failed, continuing anyway..."
+# Import Arch Linux ARM builder key manually if needed
+log_info "Ensuring Arch Linux ARM Build System key is trusted..."
+pacman-key --keyserver keyserver.ubuntu.com --recv-keys 68B3537F39A313B3E574D06777193F152BDBE6A6 || true
+pacman-key --lsign-key 68B3537F39A313B3E574D06777193F152BDBE6A6 || true
 
-# Full system upgrade
-log_info "Upgrading system packages..."
-pacman -Syu --noconfirm
-log_success "Pacman initialized"
+# Full system upgrade with signature checks bypassed for first run
+log_info "Upgrading system packages (first sync may require --disable-download-timeout)..."
+pacman -Syyu --noconfirm --disable-download-timeout
+log_success "Pacman initialized and system upgraded"
 
 # Step 2: Install build dependencies
 log_info "Step 2: Installing build dependencies..."
@@ -85,8 +89,8 @@ PACKAGES=(
     cmake
     pkgconf
 
-    # Java for build scripts
-    java-runtime-headless
+    # Java for build scripts (use specific package to avoid prompt)
+    jre-openjdk-headless
 
     # System utilities
     rsync
@@ -120,7 +124,7 @@ PACKAGES=(
     libxfixes
     libxi
     libxtst
-    libxscrnsaver
+    libxss
 
     # GUI toolkit
     gtk3
@@ -261,10 +265,29 @@ log_info "Step 6: Setting up machine ID..."
 systemd-machine-id-setup
 log_success "Machine ID configured"
 
-# Step 7: Create builder user
+# Step 7: Create builder user (with host UID/GID to avoid permission issues)
 log_info "Step 7: Creating builder user..."
 if ! id "builder" &>/dev/null; then
-    useradd -m builder
+    # Use HOST_UID/HOST_GID from Docker environment if provided
+    # This ensures files created by builder have correct ownership on host
+    if [[ -n "${HOST_UID:-}" ]] && [[ -n "${HOST_GID:-}" ]]; then
+        log_info "Creating builder with UID=$HOST_UID GID=$HOST_GID (matching host user)"
+
+        # Check if UID/GID already exist (e.g. default 'alarm' user in Arch Linux ARM)
+        EXISTING_USER=$(getent passwd "$HOST_UID" | cut -d: -f1 || true)
+        if [[ -n "$EXISTING_USER" ]]; then
+            log_info "User '$EXISTING_USER' already has UID=$HOST_UID, renaming to 'builder'"
+            usermod -l builder "$EXISTING_USER"
+            groupmod -n builder "$EXISTING_USER" 2>/dev/null || true
+            usermod -d /home/builder -m builder 2>/dev/null || true
+        else
+            groupadd -g "$HOST_GID" builder 2>/dev/null || true
+            useradd -m -u "$HOST_UID" -g "$HOST_GID" builder
+        fi
+    else
+        log_info "Creating builder with default UID/GID"
+        useradd -m builder
+    fi
     log_success "Builder user created"
 else
     log_info "Builder user already exists"
@@ -337,14 +360,9 @@ echo "=========================================="
 echo "MODERN BUILD ENVIRONMENT READY"
 echo "=========================================="
 echo ""
-echo "Key changes from old system:"
-echo "  ✓ Using Arch Linux $(pacman -Q mesa | awk '{print $2}') instead of Debian Bullseye"
-echo "  ✓ All libraries are up-to-date"
-echo "  ✓ Fixed --use-gl=angle bug in flags.conf"
-echo "  ✓ Clang $(clang --version | head -1 | awk '{print $3}')"
-echo "  ✓ Rust $(rustc --version | awk '{print $2}')"
-echo ""
 echo "To start building, switch to builder user:"
 echo "  su - builder"
-echo ""
+echo "  cd /work"
 echo "=========================================="
+su - builder
+cd /work

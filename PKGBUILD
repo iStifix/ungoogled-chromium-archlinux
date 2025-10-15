@@ -59,10 +59,9 @@ source=(https://commondatastorage.googleapis.com/chromium-browser-official/chrom
         chromium-138-rust-1.86-mismatched_lifetime_syntaxes.patch
         chromium-140.0.7339.41-rust.patch
         chromium-rx550-device-names.patch
-        chromium-libxml2-const.patch
-        chromium-libffi-hybrid.patch
-        chromium-disable-arm-sme.patch
-        chromium-qt6-cross-compile.patch
+        chromium-rust-allocator-duplicate-attrs.patch
+        vaapi-hardware-acceleration.patch
+        fetch-libvpx-rtc.sh
         baikal-chromium-launcher.py
         baikal-chromium-flags.conf)
 sha256sums=('f8136322daf003564966d00ae82b7347cd74f143f54866bdf0d7dbae8f983647'
@@ -72,6 +71,7 @@ sha256sums=('f8136322daf003564966d00ae82b7347cd74f143f54866bdf0d7dbae8f983647'
             'd634d2ce1fc63da7ac41f432b1e84c59b7cceabf19d510848a7cff40c8025342'
             'e6da901e4d0860058dc2f90c6bbcdc38a0cf4b0a69122000f62204f24fa7e374'
             '8ba5c67b7eb6cacd2dbbc29e6766169f0fca3bbb07779b1a0a76c913f17d343f'
+            'd765d63364d354a4fea31804daf3e07a0257945b7fcfc54bef10bb9942f6c294'
             '2a44756404e13c97d000cc0d859604d6848163998ea2f838b3b9bb2c840967e3'
             'd9974ddb50777be428fd0fa1e01ffe4b587065ba6adefea33678e1b3e25d1285'
             'a2da75d0c20529f2d635050e0662941c0820264ea9371eb900b9d90b5968fa6a'
@@ -79,13 +79,11 @@ sha256sums=('f8136322daf003564966d00ae82b7347cd74f143f54866bdf0d7dbae8f983647'
             '11a96ffa21448ec4c63dd5c8d6795a1998d8e5cd5a689d91aea4d2bdd13fb06e'
             '5abc8611463b3097fc5ce58017ef918af8b70d616ad093b8b486d017d021bbdf'
             '0eb47afd031188cf5a3f0502f3025a73a1799dfa52dff9906db5a3c2af24e2eb'
-            'SKIP'
-            'SKIP'
-            'SKIP'
-            'SKIP'
-            '3f4cff32af16655646c3cf914ca79599e5e3ae94860fdafe4258990775bf8f21'
-            '6bea934add6ec817e9ebdf0e5a397f2aa96034c0c9f0ead960d309d418feef1c'
-            'f8e14cef310dd5ad36fa20f20949762c26cbd1387b5ecf337a63efca6f42f59e')
+            'd5d0db9443ba743597fac5031c7e57a2b289db214d7bf0e28550140dd88fdaa6'
+            '519c13cab4e41042970a525fc16e8f4ba0d41f008711e2d64e0a4c6014a10d50'
+            '5900ba7fd1527e622ef8f9fcb542b7f874a7abaf994d944e2bb315d8294547ed'
+            '6f178493285330020d4c47b83487f1dd2ea077ca349772d3d4009c8e2bd749b7'
+            'f3e7874db0042561e474d1e3eb67a3764bd4c3a119e1175c45b9599b13c77457')
 
 if (( _manual_clone )); then
   source[0]=fetch-chromium-release
@@ -130,12 +128,20 @@ depends+=(${_system_libs[@]})
 prepare() {
   if (( _manual_clone )); then
     if [[ ! -d chromium-$pkgver ]]; then
+      # Prevent sysroot download for native ARM64 build
+      export GYP_DEFINES="use_sysroot=0"
       ./fetch-chromium-release $pkgver
     else
       msg2 'Skipping fetch-chromium-release; existing checkout detected.'
     fi
   fi
   cd chromium-$pkgver
+
+  # Remove Debian sysroot if it was downloaded (we don't need it for native ARM64)
+  if [[ -d "build/linux/debian_bullseye_arm64-sysroot" ]]; then
+    msg2 'Removing unnecessary Debian Bullseye ARM64 sysroot...'
+    rm -rf build/linux/debian_bullseye_arm64-sysroot
+  fi
 
   local _target_cpu="${CARCH:-$(uname -m)}"
   case "${_target_cpu}" in
@@ -181,12 +187,8 @@ prepare() {
   # Ensure AMD Polaris (RX550) is identified correctly
   patch -Np1 -i ../chromium-rx550-device-names.patch
 
-  # Cross-compilation fixes for Baikal-M (ARM64)
-  msg2 'Applying Baikal-M cross-compilation fixes'
-  patch -Np1 -i ../chromium-libxml2-const.patch
-  patch -Np1 -i ../chromium-libffi-hybrid.patch
-  patch -Np1 -i ../chromium-disable-arm-sme.patch
-  patch -Np1 -i ../chromium-qt6-cross-compile.patch
+  # Fix Rust allocator duplicate attributes (Rust 1.86.0)
+  patch -Np1 -i ../chromium-rust-allocator-duplicate-attrs.patch
 
   # Fixes for building with libstdc++ instead of libc++
 
@@ -243,27 +245,39 @@ prepare() {
   fi
 
   # Link to system tools required by the build
-  mkdir -p third_party/node/linux/node-linux-x64/bin/ third_party/jdk/current/bin/
-  ln -s /usr/bin/node third_party/node/linux/node-linux-x64/bin/
+  local _build_arch="${CARCH:-$(uname -m)}"
+  case "${_build_arch}" in
+    aarch64|arm64)
+      mkdir -p third_party/node/linux/node-linux-arm64/bin/ third_party/jdk/current/bin/
+      ln -s /usr/bin/node third_party/node/linux/node-linux-arm64/bin/
+      ;;
+    *)
+      mkdir -p third_party/node/linux/node-linux-x64/bin/ third_party/jdk/current/bin/
+      ln -s /usr/bin/node third_party/node/linux/node-linux-x64/bin/
+      ;;
+  esac
   ln -s /usr/bin/java third_party/jdk/current/bin/
 
-  # Remove bundled libraries for which we will use the system copies; this
-  # *should* do what the remove_bundled_libraries.py script does, with the
-  # added benefit of not having to list all the remaining libraries
-  local _lib
-  if [[ $_target_cpu != arm64 ]]; then
-    for _lib in ${_unwanted_bundled_libs[@]}; do
-      find "third_party/$_lib" -type f \
-        \! -path "third_party/$_lib/chromium/*" \
-        \! -path "third_party/$_lib/google/*" \
-        \! -path "third_party/harfbuzz-ng/utils/hb_scoped.h" \
-        \! -regex '.*\.\(gn\|gni\|isolate\)' \
-        -delete
-    done
-
-    ./build/linux/unbundle/replace_gn_files.py \
-      --system-libraries "${!_system_libs[@]}"
+  # Fetch libvpx/libaom RTC source files for VA-API
+  if [[ -x "$srcdir/fetch-libvpx-rtc.sh" ]]; then
+    msg2 'Fetching libvpx/libaom RTC source files for VA-API'
+    "$srcdir/fetch-libvpx-rtc.sh" "$srcdir/chromium-$pkgver"
   fi
+
+  # Remove bundled libraries for which we will use the system copies
+  # Native ARM64 build also uses system libraries (use_sysroot=false)
+  local _lib
+  for _lib in ${_unwanted_bundled_libs[@]}; do
+    find "third_party/$_lib" -type f \
+      \! -path "third_party/$_lib/chromium/*" \
+      \! -path "third_party/$_lib/google/*" \
+      \! -path "third_party/harfbuzz-ng/utils/hb_scoped.h" \
+      \! -regex '.*\.\(gn\|gni\|isolate\)' \
+      -delete
+  done
+
+  ./build/linux/unbundle/replace_gn_files.py \
+    --system-libraries "${!_system_libs[@]}"
 
 }
 
@@ -272,6 +286,19 @@ build() {
   rustup default 1.86.0
 
   cd chromium-$pkgver
+
+  # Set Cortex-A57 optimizations for ARM64 native build
+  local _build_arch="${CARCH:-$(uname -m)}"
+  case "${_build_arch}" in
+    aarch64|arm64)
+      # Cortex-A57 r1p3 (ARMv8.0-A baseline) - SAFE FLAGS ONLY
+      # NOTE: -ffast-math REMOVED — unsafe for OpenGL/WebGL/VA-API (causes rendering artifacts)
+      export CFLAGS="-march=armv8-a -mtune=cortex-a57 -O3 -pipe -fno-plt -fexceptions -ftree-vectorize -fomit-frame-pointer -fno-semantic-interposition"
+      export CXXFLAGS="${CFLAGS}"
+      export RUSTFLAGS="-C target-cpu=cortex-a57 -C target-feature=+neon,+crc -C opt-level=3"
+      export RUSTC_BOOTSTRAP=1
+      ;;
+  esac
 
   if (( _system_clang )); then
     export CC=clang
@@ -286,7 +313,6 @@ build() {
     export NM=$_clang_path/llvm-nm
   fi
 
-  local _build_arch="${CARCH:-$(uname -m)}"
   local _target_cpu="x64"
   local _custom_toolchain="//build/toolchain/linux/unbundle:default"
   local _host_toolchain="//build/toolchain/linux/unbundle:default"
@@ -296,7 +322,8 @@ build() {
     aarch64|arm64)
       _target_cpu="arm64"
       _custom_toolchain="//build/toolchain/linux:clang_arm64"
-      _use_sysroot=true
+      _host_toolchain="//build/toolchain/linux:clang_arm64"
+      _use_sysroot=false  # Native ARM64 build uses system libraries
       ;;
   esac
 
@@ -329,8 +356,11 @@ build() {
 
   if [[ $_target_cpu == "arm64" ]]; then
     _flags+=("is_cfi=false")
-    _flags+=("v8_snapshot_toolchain=\"//build/toolchain/linux:clang_x64\"")
+    _flags+=("v8_snapshot_toolchain=\"//build/toolchain/linux:clang_arm64\"")
+    _flags+=("enable_nacl=false")  # NaCl not supported on ARM64
+    _flags+=("use_thin_lto=false")  # Disabled: causes issues with OpenGL/EGL driver calls
     # Note: Cortex-A57 optimizations passed via CFLAGS (-march=armv8-a -mtune=cortex-a57)
+    #       -ffast-math REMOVED (unsafe for OpenGL/WebGL/VA-API)
     #       arm_float_abi and arm_use_neon are auto-set to "hard" and true for ARM64
     # GPU acceleration optimizations for AMD RX550
     _flags+=("enable_vulkan=true")
@@ -399,12 +429,21 @@ build() {
   msg2 'Configuring Chromium'
   gn gen out/Release --args="${_flags[*]}"
   msg2 'Building Chromium'
-  ninja -C out/Release chrome chrome_sandbox chromedriver
+
+  # Use optimal parallelism for Cortex-A57 (8 physical cores, no SMT)
+  case "${_build_arch}" in
+    aarch64|arm64)
+      ninja -j8 -C out/Release chrome chrome_sandbox chromedriver
+      ;;
+    *)
+      ninja -C out/Release chrome chrome_sandbox chromedriver
+      ;;
+  esac
 }
 
 package() {
   install -Dm755 "$srcdir/baikal-chromium-launcher.py" "$pkgdir/usr/bin/chromium"
-  install -Dm644 chromium-launcher-$_launcher_ver/LICENSE \
+  install -Dm644 "$srcdir/chromium-launcher-$_launcher_ver/LICENSE" \
     "$pkgdir/usr/share/licenses/chromium/LICENSE.launcher"
 
   cd chromium-$pkgver

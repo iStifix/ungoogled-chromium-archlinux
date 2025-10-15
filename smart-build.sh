@@ -1,6 +1,7 @@
 #!/bin/bash
 # Smart incremental build script for ungoogled-chromium-baikal
-# Supports partial rebuilds and selective compilation
+# Native ARM64 build for Baikal-M (Cortex-A57 r1p3)
+# Runs inside Docker container (Arch Linux ARM aarch64)
 
 set -euo pipefail
 
@@ -179,7 +180,7 @@ stage_prepare() {
 
     log_info "Preparing build environment..."
 
-    # Set up environment for ARM64 cross-compilation
+    # Set up environment for native ARM64 build
     export ARCH=aarch64
 
     # Use makepkg directly with ARM64 configuration
@@ -223,10 +224,10 @@ stage_prepare() {
 
             # Create symlinks to system Rust toolchain (needed for rust-src)
             if [[ -d "$SRC_DIR/third_party/rust-toolchain" ]]; then
-                # Get Rust version and determine sysroot
+                # Get Rust version and determine sysroot for native ARM64
                 local rustc_version=$(rustc --version 2>/dev/null | awk '{print $2}' || echo "1.86.0")
                 # Prefer /opt/rust for Docker builds (accessible to builder user)
-                local rust_sysroot="/opt/rust/toolchains/${rustc_version}-x86_64-unknown-linux-gnu"
+                local rust_sysroot="/opt/rust/toolchains/${rustc_version}-aarch64-unknown-linux-gnu"
                 if [[ ! -d "$rust_sysroot" ]]; then
                     # Fallback to rustc sysroot if /opt/rust doesn't exist
                     rust_sysroot=$(rustc --print sysroot 2>/dev/null || echo "")
@@ -285,6 +286,37 @@ stage_prepare() {
                 echo "$actual_rustc_version" > "$SRC_DIR/third_party/rust-toolchain/VERSION"
                 echo "✓ Updated $SRC_DIR/third_party/rust-toolchain/VERSION to: $actual_rustc_version"
             fi
+
+            # Fetch libvpx/libaom RTC source files for VA-API (if missing or corrupted)
+            local need_fetch=false
+
+            # Check if files are missing
+            if [[ ! -f "$SRC_DIR/third_party/libvpx/source/libvpx/vpx/vpx_ext_ratectrl.h" ]] || \
+               [[ ! -f "$SRC_DIR/third_party/libvpx/source/libvpx/vpx_util/vpx_thread.h" ]]; then
+                need_fetch=true
+            fi
+
+            # Check if libaom RTC files contain "404: Not Found" (download error)
+            if [[ -f "$SRC_DIR/third_party/libaom/source/libaom/av1/ratectrl_rtc.cc" ]]; then
+                if grep -q "404: Not Found" "$SRC_DIR/third_party/libaom/source/libaom/av1/ratectrl_rtc.cc" 2>/dev/null; then
+                    log_warning "Detected corrupted libaom RTC files (404 error), will re-download"
+                    rm -f "$SRC_DIR/third_party/libaom/source/libaom/av1/ratectrl_rtc.cc"
+                    rm -f "$SRC_DIR/third_party/libaom/source/libaom/av1/ratectrl_rtc.h"
+                    need_fetch=true
+                fi
+            else
+                need_fetch=true
+            fi
+
+            if [[ "$need_fetch" == "true" ]]; then
+                log_info "Fetching libvpx/libaom RTC source files for VA-API..."
+                if [[ -x "fetch-libvpx-rtc.sh" ]]; then
+                    ./fetch-libvpx-rtc.sh
+                    echo "✓ Fetched libvpx/libaom RTC source files"
+                else
+                    log_warning "fetch-libvpx-rtc.sh not found or not executable"
+                fi
+            fi
         fi
 
         update_timestamp "prepare"
@@ -310,6 +342,28 @@ stage_prepare() {
             # Mark patches as applied
             touch "$SRC_DIR/.patches_applied"
 
+            # Fetch libvpx/libaom RTC source files for VA-API (CRITICAL for hardware acceleration)
+            log_info "Fetching libvpx/libaom RTC source files for VA-API..."
+            if [[ -x "fetch-libvpx-rtc.sh" ]]; then
+                ./fetch-libvpx-rtc.sh
+
+                # Verify libaom RTC files were downloaded correctly
+                if [[ -f "$SRC_DIR/third_party/libaom/source/libaom/av1/ratectrl_rtc.cc" ]]; then
+                    if grep -q "404: Not Found" "$SRC_DIR/third_party/libaom/source/libaom/av1/ratectrl_rtc.cc" 2>/dev/null; then
+                        log_error "Failed to download libaom RTC files (404 error)"
+                        log_error "This will break VA-API AV1 hardware acceleration!"
+                        return 1
+                    else
+                        echo "✓ Fetched libvpx/libaom RTC source files successfully"
+                    fi
+                else
+                    log_error "libaom RTC files missing after fetch"
+                    return 1
+                fi
+            else
+                log_warning "fetch-libvpx-rtc.sh not found or not executable"
+            fi
+
             update_timestamp "prepare"
             log_success "Prepare stage: COMPLETED"
         else
@@ -319,17 +373,17 @@ stage_prepare() {
     fi
 }
 
-# Function to prepare build environment (NO OLD DEBIAN SYSROOT)
+# Function to prepare build environment (native ARM64 build)
 stage_sysroot() {
     log_stage "STAGE 2: Prepare Build Environment"
 
-    # NO DEBIAN SYSROOT - we use system libraries from /usr/lib
+    # Native ARM64 build - use system libraries from /usr/lib
     if [[ -f "$TIMESTAMPS_FILE" ]] && grep -q "^sysroot:" "$TIMESTAMPS_FILE"; then
         log_success "Sysroot stage: UP TO DATE (skipping)"
         return 0
     fi
 
-    log_info "Preparing build environment (using system libraries, NOT Debian sysroot)"
+    log_info "Preparing build environment for native ARM64 build"
 
     # Create symlink for clang resource directory
     local clang_version=$(clang --version | head -1 | sed 's/.*version \([0-9]*\).*/\1/' || echo "21")
@@ -344,7 +398,7 @@ stage_sysroot() {
     local bindgen_gni="${SRC_DIR}/build/rust/rust_bindgen_generator.gni"
     if [[ -f "$bindgen_gni" ]]; then
         if grep -q 'rebase_path(clang_base_path + "/lib/clang/"' "$bindgen_gni"; then
-            sed -i '/clang_resource_dir =/,/root_build_dir)/c\    # Patched for cross-compilation: use absolute path instead of relative\n    # because bindgen with relative paths cannot find clang headers\n    clang_resource_dir = clang_base_path + "/lib/clang/" + clang_version' "$bindgen_gni"
+            sed -i '/clang_resource_dir =/,/root_build_dir)/c\    # Patched: use absolute path to clang headers\n    clang_resource_dir = clang_base_path + "/lib/clang/" + clang_version' "$bindgen_gni"
             log_success "Patched rust_bindgen_generator.gni"
         fi
     fi
@@ -381,7 +435,7 @@ stage_sysroot() {
     log_success "Sysroot stage: COMPLETED"
 }
 
-# Function to check build dependencies (especially for cross-compilation)
+# Function to check build dependencies
 check_build_dependencies() {
     log_info "Checking build dependencies..."
 
@@ -453,31 +507,34 @@ stage_configure() {
 
     local clang_version=$(clang --version | grep -m1 version | sed 's/.* \([0-9.]*\).*/\1/' || echo "0")
 
-    # Get Rust version and sysroot
+    # Get Rust version and sysroot for native ARM64
     local rustc_version=$(rustc --version 2>/dev/null | awk '{print $2}' || echo "1.86.0")
     # Always use /opt/rust for Docker builds (accessible to builder user)
-    # Don't use rustc --print sysroot as it may point to /root/.rustup
-    local rust_sysroot="/opt/rust/toolchains/${rustc_version}-x86_64-unknown-linux-gnu"
+    local rust_sysroot="/opt/rust/toolchains/${rustc_version}-aarch64-unknown-linux-gnu"
     if [[ ! -d "$rust_sysroot" ]]; then
         # Fallback to system rustc sysroot if /opt/rust doesn't exist
         rust_sysroot=$(rustc --print sysroot 2>/dev/null || echo "")
     fi
 
+    # Verify we're running on ARM64 (native build)
     local build_arch=$(uname -m)
-    if [[ "${build_arch}" =~ ^(aarch64|arm64)$ ]]; then
-        # Cortex-A57 tuning for Baikal-M hosts
-        local baikal_flags="-mcpu=cortex-a57 -mtune=cortex-a57 -fomit-frame-pointer -fno-semantic-interposition"
-        CFLAGS+=" ${baikal_flags}"
-        CXXFLAGS+=" ${baikal_flags}"
-        export CFLAGS CXXFLAGS
+    if [[ ! "${build_arch}" =~ ^(aarch64|arm64)$ ]]; then
+        log_error "This script is for native ARM64 builds only!"
+        log_error "Current architecture: $build_arch"
+        cd - > /dev/null
+        return 1
     fi
 
-    # Use standard clang toolchains (consistent with chromium build system)
+    # Cortex-A57 tuning for Baikal-M (already set by cortex-a57-env.sh via CFLAGS)
+    # Additional GN-specific flags
+    local baikal_flags="-fomit-frame-pointer -fno-semantic-interposition"
+    CFLAGS+=" ${baikal_flags}"
+    CXXFLAGS+=" ${baikal_flags}"
+    export CFLAGS CXXFLAGS
+
+    # Use standard clang ARM64 toolchain (native build)
     local custom_toolchain="//build/toolchain/linux:clang_arm64"
-    local host_toolchain="//build/toolchain/linux:clang_x64"
-    if [[ "${build_arch}" =~ ^(aarch64|arm64)$ ]]; then
-        host_toolchain="//build/toolchain/linux:clang_arm64"
-    fi
+    local host_toolchain="//build/toolchain/linux:clang_arm64"
 
     # Clean stale GN state so updated arguments take effect
     rm -f out/Release/args.gn out/Release/build.ninja
@@ -485,24 +542,21 @@ stage_configure() {
     # Clean Rust artifacts ONLY if they were built without RUSTC_BOOTSTRAP=1
     # Check for the telltale sign: missing __rust_no_alloc_shim_is_unstable symbol
     local need_rust_clean=false
-    if [[ -f "out/Release/clang_x64/obj/build/rust/allocator/libbuild_srust_sallocator_callocator.rlib" ]]; then
+    if [[ -f "out/Release/clang_arm64/obj/build/rust/allocator/libbuild_srust_sallocator_callocator.rlib" ]]; then
         # Check if allocator was built correctly (should not need external __rust_no_alloc_shim_is_unstable)
-        if nm out/Release/clang_x64/obj/build/rust/allocator/libbuild_srust_sallocator_callocator.rlib 2>/dev/null | grep -q "U __rust_no_alloc_shim_is_unstable"; then
+        if nm out/Release/clang_arm64/obj/build/rust/allocator/libbuild_srust_sallocator_callocator.rlib 2>/dev/null | grep -q "U __rust_no_alloc_shim_is_unstable"; then
             need_rust_clean=true
             log_warning "Detected Rust artifacts built without RUSTC_BOOTSTRAP=1"
         fi
     fi
 
-    if [[ "$need_rust_clean" == "true" ]] || [[ ! -f "out/Release/clang_x64/prebuilt_rustc_sysroot/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd.rlib" ]]; then
+    if [[ "$need_rust_clean" == "true" ]] || [[ ! -f "out/Release/clang_arm64/prebuilt_rustc_sysroot/lib/rustlib/aarch64-unknown-linux-gnu/lib/libstd.rlib" ]]; then
         # Clean Rust artifacts to force rebuild with RUSTC_BOOTSTRAP=1
         # This fixes __rust_no_alloc_shim_is_unstable linker errors
         log_info "Cleaning Rust artifacts to ensure RUSTC_BOOTSTRAP=1 is applied"
-        rm -rf out/Release/clang_x64/prebuilt_rustc_sysroot 2>/dev/null || true
-        rm -rf out/Release/clang_x64/obj/build/rust 2>/dev/null || true
-        rm -rf out/Release/clang_x64/obj/third_party/rust 2>/dev/null || true
-        rm -rf out/Release/clang_x64_v8_arm64/prebuilt_rustc_sysroot 2>/dev/null || true
-        rm -rf out/Release/clang_x64_v8_arm64/obj/build/rust 2>/dev/null || true
-        rm -rf out/Release/clang_x64_v8_arm64/obj/third_party/rust 2>/dev/null || true
+        rm -rf out/Release/clang_arm64/prebuilt_rustc_sysroot 2>/dev/null || true
+        rm -rf out/Release/clang_arm64/obj/build/rust 2>/dev/null || true
+        rm -rf out/Release/clang_arm64/obj/third_party/rust 2>/dev/null || true
     else
         log_info "Rust artifacts are clean, keeping them for incremental build"
     fi
@@ -510,18 +564,27 @@ stage_configure() {
     # Reset GN library overrides first
     python3 build/linux/unbundle/replace_gn_files.py --undo >/dev/null 2>&1 || true
 
-    # Use ALL system libraries from /usr/lib (modern Arch Linux)
-    # NO OLD DEBIAN BULLSEYE SYSROOT!
-    log_info "Configuring to use ALL modern system libraries from /usr/lib"
+    # Use modern system libraries from /usr/lib (Arch Linux ARM aarch64)
+    # Using system libvpx/libaom (full encoder support, no need for RTC sources)
+    # Bundled libdrm (old Debian version lacks drmSyncobjEventfd)
+    # Bundled dav1d for consistency
+    log_info "Configuring to use system libraries (bundled: dav1d, libdrm)"
     python3 build/linux/unbundle/replace_gn_files.py --system-libraries \
-        fontconfig freetype harfbuzz libjpeg libpng libwebp libxml libxslt \
-        opus flac dav1d libvpx zlib brotli 2>&1 | head -5
+        fontconfig freetype harfbuzz-ng libjpeg libpng libwebp libxml libxslt \
+        opus flac zlib brotli libvpx libaom 2>&1 | head -5
 
-    log_success "Configured to use modern Arch Linux libraries"
+    log_success "Configured to use Arch Linux ARM libraries (native)"
 
-    # Run gn configuration with system toolchains and ungoogled flags
-    # IMPORTANT: use_sysroot=false means NO DEBIAN BULLSEYE!
-    # We use system libraries from /usr/lib (Arch Linux packages)
+    # Create Node.js symlinks (GN hardcodes x64 path even on ARM64)
+    log_info "Creating Node.js symlinks for both x64 and arm64 paths"
+    mkdir -p third_party/node/linux/node-linux-x64/bin
+    mkdir -p third_party/node/linux/node-linux-arm64/bin
+    ln -sf /usr/bin/node third_party/node/linux/node-linux-x64/bin/node 2>/dev/null || true
+    ln -sf /usr/bin/node third_party/node/linux/node-linux-arm64/bin/node 2>/dev/null || true
+    log_success "Node.js symlinks configured"
+
+    # Run gn configuration for native ARM64 build with ungoogled flags
+    # IMPORTANT: use_sysroot=false means we use /usr/lib (Arch Linux ARM native)
     local _flags=(
         "target_os=\"linux\""
         "target_cpu=\"arm64\""
@@ -553,21 +616,55 @@ stage_configure() {
         "chrome_pgo_phase=0"
         "rust_bindgen_root=\"/usr\""
         "is_cfi=false"
-        "v8_snapshot_toolchain=\"//build/toolchain/linux:clang_x64\""
+        "enable_nacl=false"
+        "use_thin_lto=false"  # Disabled: causes issues with OpenGL/EGL driver calls
+        "v8_snapshot_toolchain=\"${host_toolchain}\""
         # Note: Cortex-A57 optimizations passed via CFLAGS from cortex-a57-env.sh
-        #       (-march=armv8-a+crc+crypto -mtune=cortex-a57)
+        #       (-march=armv8-a -mtune=cortex-a57 -O3 -ftree-vectorize)
+        #       -ffast-math REMOVED (unsafe for OpenGL/WebGL/VA-API)
         #       arm_float_abi and arm_use_neon are auto-set to "hard" and true for ARM64
     )
 
+    # Add Rust sysroot configuration
+    if [[ -n "$rust_sysroot" ]] && [[ -d "$rust_sysroot" ]]; then
+        _flags+=("rust_sysroot_absolute=\"$rust_sysroot\"")
+        _flags+=("rustc_version=\"$rustc_version\"")
+    fi
+
+    # Add Qt6 configuration for KDE integration
+    _flags+=("use_qt5=false")
+    _flags+=("use_qt6=true")
+    _flags+=("moc_qt6_path=\"/usr/lib/qt6\"")
+
+    # Read ungoogled-chromium flags.gn (avoid duplicates by using associative array)
+    declare -A gn_flags_map
+    # First, add all base flags to map
+    for flag in "${_flags[@]}"; do
+        key="${flag%%=*}"
+        gn_flags_map["$key"]="$flag"
+    done
+
+    # Then merge ungoogled flags (will override duplicates)
     local ungoogled_flags_file="../ungoogled-chromium-${CHROMIUM_VERSION}-1/flags.gn"
     if [[ -f "${ungoogled_flags_file}" ]]; then
         while IFS= read -r line; do
             [[ -z "${line}" ]] && continue
-            _flags+=("${line}")
+            key="${line%%=*}"
+            gn_flags_map["$key"]="$line"
         done < "${ungoogled_flags_file}"
     fi
 
+    # Create args.gn file directly (faster than --args for large configs)
+    mkdir -p out/Release
+    {
+        for key in "${!gn_flags_map[@]}"; do
+            echo "${gn_flags_map[$key]}"
+        done
+    } > out/Release/args.gn
 
+    log_info "Generated args.gn with $(wc -l < out/Release/args.gn) flags (Rust + Qt6 + ungoogled)"
+
+    # Find gn binary
     local gn_cmd=${GN_BINARY:-gn}
     if ! command -v "${gn_cmd}" >/dev/null 2>&1; then
         if [[ -x "${SRC_DIR}/buildtools/linux64/gn" ]]; then
@@ -582,48 +679,15 @@ stage_configure() {
         fi
     fi
 
-    # Generate args.gn with base flags
-    if ! "${gn_cmd}" gen out/Release --args="${_flags[*]}"; then
+    # Run gn gen ONCE to generate build.ninja
+    log_info "Running 'gn gen out/Release' (this may take 10-30 min on QEMU)..."
+    if ! "${gn_cmd}" gen out/Release; then
         cd - > /dev/null
         log_error "Configure stage: FAILED"
         return 1
     fi
 
-    # Add Rust sysroot configuration to args.gn after initial generation
-    if [[ -n "$rust_sysroot" ]] && [[ -d "$rust_sysroot" ]]; then
-        sed -i '/^rust_sysroot_absolute/d' out/Release/args.gn
-        sed -i '/^rustc_version/d' out/Release/args.gn
-        echo "rust_sysroot_absolute = \"$rust_sysroot\"" >> out/Release/args.gn
-        echo "rustc_version = \"$rustc_version\"" >> out/Release/args.gn
-        log_success "Added Rust configuration to args.gn"
-        if "${gn_cmd}" gen out/Release; then
-            log_success "Regenerated build files with Rust configuration"
-        else
-            cd - > /dev/null
-            log_error "Configure stage: Failed to regenerate with Rust config"
-            return 1
-        fi
-    fi
-
-    # Add Qt6 configuration for KDE integration
-    log_info "Configuring Qt6 support for KDE Plasma integration"
-    sed -i '/^use_qt5/d' out/Release/args.gn
-    sed -i '/^use_qt6/d' out/Release/args.gn
-    sed -i '/^moc_qt6_path/d' out/Release/args.gn
-
-    echo 'use_qt5 = false' >> out/Release/args.gn
-    echo 'use_qt6 = true' >> out/Release/args.gn
-    echo 'moc_qt6_path = "/usr/lib/qt6"' >> out/Release/args.gn
-    log_success "Added Qt6 configuration to args.gn"
-
-    # Regenerate build.ninja with Qt6 configuration
-    if "${gn_cmd}" gen out/Release; then
-        log_success "Regenerated build files with Qt6 configuration"
-    else
-        cd - > /dev/null
-        log_error "Configure stage: Failed to regenerate with Qt6 config"
-        return 1
-    fi
+    log_success "GN configuration completed"
 
     cd - > /dev/null
     update_timestamp "configure"
@@ -684,22 +748,20 @@ EOF
     export PATH="$wrapper_dir:$PATH"
     log_info "Created rustc wrapper in $wrapper_dir"
 
-    # DEPRECATED: RPATH patching no longer needed with proper use_sysroot=false in args.gn
-    # The cross-compilation fix in stage_configure() ensures build tools use system libraries
-    # which avoids glibc/library version conflicts automatically
-
     # Verify Rust environment is correct
     local current_rust_sysroot=$(rustc --print sysroot 2>/dev/null || echo "")
     log_info "Using Rust sysroot: $current_rust_sysroot"
 
-    # Optimize ninja settings
-    local ninja_jobs=$(nproc)
+    # Optimize ninja settings for Baikal-M (8 physical cores, no SMT)
+    local ninja_jobs=8
     local available_mem=$(free -m | awk 'NR==2{printf "%d", $7}')
 
-    if [[ $available_mem -lt 8000 ]]; then
+    if [[ $available_mem -lt 4000 ]]; then
         ninja_jobs=4
         log_warning "Limited memory detected. Using $ninja_jobs parallel jobs."
     fi
+
+    log_info "Using $ninja_jobs parallel jobs (8 Cortex-A57 cores available)"
 
     cd "$SRC_DIR"
 
@@ -738,12 +800,12 @@ stage_package() {
     # Set up environment
     export ARCH=aarch64
 
-    # Create makepkg config for ARM64 cross-compilation if not exists
+    # Create makepkg config for native ARM64 build if not exists
     if [[ ! -f ".makepkg-aarch64.conf" ]]; then
-        log_info "Creating .makepkg-aarch64.conf for cross-compilation..."
+        log_info "Creating .makepkg-aarch64.conf for native ARM64 build..."
         cat > .makepkg-aarch64.conf << 'EOF'
 #
-# makepkg configuration for ARM64 cross-compilation
+# makepkg configuration for native ARM64 build
 #
 
 CARCH="aarch64"
@@ -753,11 +815,11 @@ CHOST="aarch64-unknown-linux-gnu"
 PKGEXT='.pkg.tar.zst'
 SRCEXT='.src.tar.gz'
 
-# Disable stripping for cross-compilation (native strip corrupts ARM64 binaries)
-OPTIONS=(!strip docs libtool staticlibs emptydirs !zipman !purge !debug !lto)
+# Standard options for native ARM64 build
+OPTIONS=(strip docs libtool staticlibs emptydirs !zipman !purge !debug !lto)
 
-# Use parallel compression
-COMPRESSZST=(zstd -c -T0 --ultra -20 -)
+# Use parallel compression (all 8 Cortex-A57 cores)
+COMPRESSZST=(zstd -c -T8 --ultra -20 -)
 
 # Package destinations
 PKGDEST="${PKGDEST:-pkgdest}"
@@ -897,7 +959,7 @@ main() {
                 log_info "Rust sysroot: $(rustc --print sysroot)"
 
                 cd "$SRC_DIR"
-                ninja -C out/Release "$target"
+                ninja -C out/Release -j8 "$target"
                 cd - > /dev/null
                 log_success "Ninja rebuild completed"
             else
@@ -905,7 +967,7 @@ main() {
             fi
             ;;
         "auto"|"")
-            log_info "Starting smart incremental build..."
+            log_info "Starting smart incremental build (native ARM64)..."
             if stage_prepare && \
                stage_sysroot && \
                stage_configure && \
@@ -919,7 +981,7 @@ main() {
             fi
             ;;
         "full")
-            log_warning "Starting full rebuild (cleaning first)..."
+            log_warning "Starting full rebuild (cleaning first, native ARM64)..."
             # Clean everything first
             rm -rf src pkg build .build
             rm -f .makepkg-*.conf *.pkg.tar.*
@@ -942,6 +1004,9 @@ main() {
         *)
             echo "Usage: $0 [command] [options]"
             echo ""
+            echo "Native ARM64 build for Baikal-M (Cortex-A57 r1p3)"
+            echo "Runs inside Docker container (Arch Linux ARM aarch64)"
+            echo ""
             echo "Commands:"
             echo "  auto      - Smart incremental build (default)"
             echo "  full      - Full rebuild from scratch"
@@ -951,7 +1016,7 @@ main() {
             echo ""
             echo "Individual stages:"
             echo "  prepare   - Prepare build environment"
-            echo "  sysroot   - Fix ARM64 sysroot dependencies"
+            echo "  sysroot   - Prepare native ARM64 build environment"
             echo "  configure - Configure build (gn gen)"
             echo "  compile [target] - Compile (default: chrome)"
             echo "  package   - Create installation package"

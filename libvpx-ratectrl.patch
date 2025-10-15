@@ -1,0 +1,98 @@
+# Ensure GN exposes RTC headers when using system libvpx
+# Adds libvpx internal include dir and exports vpx_ratectrl_rtc through shim
+
+diff --git a/build/linux/unbundle/libvpx.gn b/build/linux/unbundle/libvpx.gn
+index 1234567..abcdefg 100644
+--- a/build/linux/unbundle/libvpx.gn
++++ b/build/linux/unbundle/libvpx.gn
+@@
+ pkg_config("system_libvpx") {
+   packages = [ "vpx" ]
+ }
+ 
++config("libvpx_internal_headers") {
++  include_dirs = [ "//third_party/libvpx/source/libvpx" ]
++}
++
+ shim_headers("libvpx_shim") {
+   root_path = "source/libvpx"
+   headers = [
+     "vpx/vp8.h",
+     "vpx/vp8cx.h",
+     "vpx/vp8dx.h",
+     "vpx/vpx_codec.h",
+     "vpx/vpx_codec_impl_bottom.h",
+     "vpx/vpx_codec_impl_top.h",
+     "vpx/vpx_decoder.h",
+     "vpx/vpx_encoder.h",
+     "vpx/vpx_frame_buffer.h",
+     "vpx/vpx_image.h",
+     "vpx/vpx_integer.h",
++    "vpx/internal/vpx_ratectrl_rtc.h",
+   ]
+ }
+ 
+ source_set("libvpx") {
+   deps = [ ":libvpx_shim" ]
+-  public_configs = [ ":system_libvpx" ]
++  public_configs = [
++    ":system_libvpx",
++    ":libvpx_internal_headers",
++  ]
+ }
+ 
+ # Stub for VA-API dependency - system libvpx already contains full encoder implementation
+ # including rate control functionality needed by VA-API hardware encoding
+ source_set("libvpxrc") {
+   # No sources needed - system libvpx.so contains all necessary symbols
+   public_deps = [ ":libvpx" ]
+   public_configs = [ ":system_libvpx" ]
+ }
+
+diff --git a/third_party/libvpx/BUILD.gn b/third_party/libvpx/BUILD.gn
+index 2345678..bcdefgh 100644
+--- a/third_party/libvpx/BUILD.gn
++++ b/third_party/libvpx/BUILD.gn
+@@
+ pkg_config("system_libvpx") {
+   packages = [ "vpx" ]
+ }
+ 
++config("libvpx_internal_headers") {
++  include_dirs = [ "//third_party/libvpx/source/libvpx" ]
++}
++
+ shim_headers("libvpx_shim") {
+   root_path = "source/libvpx"
+   headers = [
+     "vpx/vp8.h",
+     "vpx/vp8cx.h",
+     "vpx/vp8dx.h",
+     "vpx/vpx_codec.h",
+     "vpx/vpx_codec_impl_bottom.h",
+     "vpx/vpx_codec_impl_top.h",
+     "vpx/vpx_decoder.h",
+     "vpx/vpx_encoder.h",
+     "vpx/vpx_frame_buffer.h",
+     "vpx/vpx_image.h",
+     "vpx/vpx_integer.h",
++    "vpx/internal/vpx_ratectrl_rtc.h",
+   ]
+ }
+ 
+ source_set("libvpx") {
+   deps = [ ":libvpx_shim" ]
+-  public_configs = [ ":system_libvpx" ]
++  public_configs = [
++    ":system_libvpx",
++    ":libvpx_internal_headers",
++  ]
+ }
+ 
+ # Stub for VA-API dependency - system libvpx already contains full encoder implementation
+ # including rate control functionality needed by VA-API hardware encoding
+ source_set("libvpxrc") {
+   # No sources needed - system libvpx.so contains all necessary symbols
+   public_deps = [ ":libvpx" ]
+   public_configs = [ ":system_libvpx" ]
+ }

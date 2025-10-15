@@ -68,16 +68,24 @@ fi
 # Current directory
 WORK_DIR="$(pwd)"
 
+# Get host user UID/GID to avoid permission issues
+HOST_UID=$(id -u)
+HOST_GID=$(id -g)
+
 log_info "Starting ARM64 Arch Linux container..."
 log_info "Work directory: $WORK_DIR"
+log_info "Host UID:GID = $HOST_UID:$HOST_GID (files will be owned by this user)"
 
 # Run ARM64 container
 # NOTE: No --platform flag needed - QEMU binfmt_misc handles ARM64 automatically
 # Uses official Arch Linux ARM from archlinuxarm.org
+# HOST_UID/HOST_GID are passed to setup-docker.sh to create builder with matching UID
 docker run -it --rm \
     --name chromium-arm64-builder \
     -v "$WORK_DIR":/work \
     -w /work \
+    -e HOST_UID=$HOST_UID \
+    -e HOST_GID=$HOST_GID \
     archlinux-arm64:latest \
     /bin/bash
 
