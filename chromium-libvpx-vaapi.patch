@@ -1,0 +1,157 @@
+diff --git a/media/BUILD.gn b/media/BUILD.gn
+index b4d93b2..1a3c017 100644
+--- a/media/BUILD.gn
++++ b/media/BUILD.gn
+@@ -25,6 +25,9 @@ buildflag_header("media_buildflags") {
+ 
+   enable_passthrough_audio_codecs =
+       enable_platform_dts_audio && (is_win || is_linux)
++  enable_libvpx_ratectrl =
++      media_use_libvpx &&
++      (!defined(use_system_libvpx) || !use_system_libvpx)
+   enable_libaom_ratectrl = enable_libaom
+ 
+   flags = [
+@@ -49,6 +52,8 @@ buildflag_header("media_buildflags") {
+     "ENABLE_LIBAOM=$enable_libaom",
+     "ENABLE_LIBRARY_CDMS=$enable_library_cdms",
+     "ENABLE_LIBVPX=$media_use_libvpx",
++    "ENABLE_LIBVPX_RATECTRL=$enable_libvpx_ratectrl",
++    "ENABLE_LIBAOM_RATECTRL=$enable_libaom_ratectrl",
+     "ENABLE_LOGGING_OVERRIDE=$enable_logging_override",
+     "ENABLE_MEDIA_DRM_STORAGE=$enable_media_drm_storage",
+     "ENABLE_MEDIA_REMOTING=$enable_media_remoting",
+diff --git a/media/gpu/vaapi/vp9_vaapi_video_encoder_delegate.cc b/media/gpu/vaapi/vp9_vaapi_video_encoder_delegate.cc
+index 3bb8151..0b10bcd 100644
+--- a/media/gpu/vaapi/vp9_vaapi_video_encoder_delegate.cc
++++ b/media/gpu/vaapi/vp9_vaapi_video_encoder_delegate.cc
+@@ -15,6 +15,7 @@
+ #include <array>
+ #include <numeric>
+ 
++#include "media/base/media_buildflags.h"
+ #include "base/bits.h"
+ #include "base/memory/ref_counted_memory.h"
+ #include "base/numerics/safe_conversions.h"
+@@ -51,6 +52,11 @@ libvpx::VP9RateControlRtcConfig CreateRateControlConfig(
+     const VideoBitrateAllocation& bitrate_allocation,
+     const size_t num_temporal_layers,
+     const std::vector<gfx::Size>& spatial_layer_resolutions) {
++#if !BUILDFLAG(ENABLE_LIBVPX_RATECTRL)
++  // If libvpx' real-time rate control is unavailable, fall back to a minimal
++  // configuration so that VA-API encoding still functions (albeit with simple
++  // defaults).
++#endif
+   DCHECK(!spatial_layer_resolutions.empty());
+   const gfx::Size& encode_size = spatial_layer_resolutions.back();
+   const size_t num_spatial_layers = spatial_layer_resolutions.size();
+@@ -116,16 +122,36 @@ scoped_refptr<VP9Picture> GetVP9Picture(
+ }  // namespace
+ 
+ std::unique_ptr<VP9RateControlWrapper> VP9RateControlWrapper::Create(
+     const libvpx::VP9RateControlRtcConfig& config) {
++#if BUILDFLAG(ENABLE_LIBVPX_RATECTRL)
+   auto impl = libvpx::VP9RateControlRTC::Create(config);
+   if (!impl) {
+     DLOG(ERROR) << "Failed creating video RateControlRTC";
+     return nullptr;
+   }
+   return std::make_unique<VP9RateControlWrapper>(std::move(impl));
++#else
++  auto wrapper = std::make_unique<VP9RateControlWrapper>();
++  wrapper->UpdateRateControl(config);
++  return wrapper;
++#endif
+ }
+ 
+ VP9RateControlWrapper::VP9RateControlWrapper() = default;
++#if BUILDFLAG(ENABLE_LIBVPX_RATECTRL)
+ VP9RateControlWrapper::VP9RateControlWrapper(
+     std::unique_ptr<libvpx::VP9RateControlRTC> impl)
+     : impl_(std::move(impl)) {}
++#else
+@@ -133,15 +159,34 @@ VP9RateControlWrapper::VP9RateControlWrapper(
+     std::unique_ptr<libvpx::VP9RateControlRTC> /*impl*/) {}
++#endif
+ 
+ void VP9RateControlWrapper::UpdateRateControl(
+     const libvpx::VP9RateControlRtcConfig& rate_control_config) {
++#if BUILDFLAG(ENABLE_LIBVPX_RATECTRL)
+   impl_->UpdateRateControl(rate_control_config);
++#else
+   last_rate_config_ = rate_control_config;
+   current_qp_ = rate_control_config.max_quantizer;
+   loopfilter_level_ = 0;
++#endif
+ }
+@@ -149,7 +194,11 @@ void VP9RateControlWrapper::UpdateRateControl(
+ VP9RateControlWrapper::~VP9RateControlWrapper() = default;
+ 
+ libvpx::FrameDropDecision VP9RateControlWrapper::ComputeQP(
+     const libvpx::VP9FrameParamsQpRTC& frame_params) {
++#if BUILDFLAG(ENABLE_LIBVPX_RATECTRL)
+   return impl_->ComputeQP(frame_params);
++#else
+   last_frame_params_ = frame_params;
+   return libvpx::FrameDropDecision::kKeep;
++#endif
+ }
+@@ -157,7 +206,12 @@ libvpx::FrameDropDecision VP9RateControlWrapper::ComputeQP(
+ 
+ int VP9RateControlWrapper::GetQP() const {
++#if BUILDFLAG(ENABLE_LIBVPX_RATECTRL)
+   return impl_->GetQP();
++#else
+   return std::clamp(current_qp_,
+                     static_cast<int>(last_rate_config_.min_quantizer),
+                     static_cast<int>(last_rate_config_.max_quantizer));
++#endif
+ }
+@@ -165,14 +219,28 @@ int VP9RateControlWrapper::GetQP() const {
+ 
+ void VP9RateControlWrapper::PostEncodeUpdate(
+     uint64_t encoded_frame_size,
+     const libvpx::VP9FrameParamsQpRTC& frame_params) {
++#if BUILDFLAG(ENABLE_LIBVPX_RATECTRL)
+   impl_->PostEncodeUpdate(encoded_frame_size, frame_params);
++#else
+   last_frame_params_ = frame_params;
+   loopfilter_level_ = static_cast<int>(frame_params.loopfilter_level);
++#endif
+ }
+ 
+ int VP9RateControlWrapper::GetLoopfilterLevel() const {
++#if BUILDFLAG(ENABLE_LIBVPX_RATECTRL)
+   return impl_->GetLoopfilterLevel();
++#else
+   return loopfilter_level_;
++#endif
+ }
+diff --git a/media/gpu/vaapi/vp9_vaapi_video_encoder_delegate.h b/media/gpu/vaapi/vp9_vaapi_video_encoder_delegate.h
+index 2c318bd..ee62933 100644
+--- a/media/gpu/vaapi/vp9_vaapi_video_encoder_delegate.h
++++ b/media/gpu/vaapi/vp9_vaapi_video_encoder_delegate.h
+@@ -13,6 +13,7 @@
+ #include <utility>
+ #include <vector>
+ 
+ #include "media/base/video_bitrate_allocation.h"
++#include "media/media_buildflags.h"
+ #include "media/gpu/vaapi/vaapi_video_encoder_delegate.h"
+ #include "media/gpu/vp9_picture.h"
+ #include "media/gpu/vp9_reference_frame_vector.h"
+@@ -48,7 +49,15 @@ class VP9RateControlWrapper {
+   virtual void PostEncodeUpdate(
+       uint64_t encoded_frame_size,
+       const libvpx::VP9FrameParamsQpRTC& frame_params);
+ 
+  private:
++#if BUILDFLAG(ENABLE_LIBVPX_RATECTRL)
+   const std::unique_ptr<libvpx::VP9RateControlRTC> impl_;
++#else
+   libvpx::VP9RateControlRtcConfig last_rate_config_{};
+   libvpx::VP9FrameParamsQpRTC last_frame_params_{};
+   int current_qp_ = 0;
+   int loopfilter_level_ = 0;
++#endif
+ };

@@ -20,6 +20,8 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+DOCKER_CONTAINER_NAME="${DOCKER_CONTAINER_NAME:-chromium-arm64-builder}"
+
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
@@ -38,6 +40,24 @@ log_error() {
 
 log_stage() {
     echo -e "${CYAN}[STAGE]${NC} $1"
+}
+
+is_inside_docker() {
+    [[ -f /.dockerenv ]]
+}
+
+docker_container_online() {
+    command -v docker >/dev/null 2>&1 || return 1
+    docker ps --format '{{.Names}}' | grep -Fxq "$DOCKER_CONTAINER_NAME"
+}
+
+run_in_builder_container() {
+    local cmd="$1"
+    if ! docker_container_online; then
+        log_warning "Docker container ${DOCKER_CONTAINER_NAME} is not running; cannot execute: $cmd"
+        return 1
+    fi
+    docker exec -u builder -w "$DOCKER_WORKDIR" "$DOCKER_CONTAINER_NAME" bash -lc "$cmd"
 }
 
 # Check if we're in the right directory
@@ -65,6 +85,7 @@ SRC_DIR="src/chromium-${CHROMIUM_VERSION}"
 OUT_DIR="${SRC_DIR}/out/Release"
 STATE_DIR=".build"
 TIMESTAMPS_FILE="${STATE_DIR}/timestamps"
+DOCKER_WORKDIR="/work/src/chromium-${CHROMIUM_VERSION}"
 
 # Create state directory
 mkdir -p "$STATE_DIR"
@@ -615,6 +636,7 @@ stage_configure() {
         "clang_base_path=\"/usr\""
         "chrome_pgo_phase=0"
         "rust_bindgen_root=\"/usr\""
+        "use_system_libvpx=false"
         "is_cfi=false"
         "enable_nacl=false"
         "use_thin_lto=false"  # Disabled: causes issues with OpenGL/EGL driver calls
@@ -772,10 +794,41 @@ EOF
         cd - > /dev/null
         update_timestamp "compile"
         log_success "Compile stage: COMPLETED ($target)"
+        ensure_navigation_api_artifacts
     else
         cd - > /dev/null
         log_error "Compile stage: FAILED ($target)"
         return 1
+    fi
+}
+
+ensure_navigation_api_artifacts() {
+    # Skip when running inside the container; the build step already ran there
+    if is_inside_docker; then
+        return 0
+    fi
+
+    local obj_path="${OUT_DIR}/obj/third_party/blink/renderer/core/core/navigation_api.o"
+    local snapshot_path="${OUT_DIR}/v8_context_snapshot_generator"
+
+    # If the object exists but is empty, rebuild it inside the container so the thin archive stays valid.
+    if [[ -f "$obj_path" ]] && [[ ! -s "$obj_path" ]]; then
+        log_warning "Detected empty navigation_api.o; rebuilding inside ${DOCKER_CONTAINER_NAME}"
+        run_in_builder_container "ninja -C out/Release obj/third_party/blink/renderer/core/core/navigation_api.o" || \
+            log_error "Failed to rebuild navigation_api.o inside ${DOCKER_CONTAINER_NAME}"
+    fi
+
+    # Ensure the snapshot generator binary is present since the linker previously failed when built on host.
+    if [[ ! -f "$snapshot_path" ]] || [[ ! -s "$snapshot_path" ]]; then
+        log_warning "Ensuring v8_context_snapshot_generator exists inside ${DOCKER_CONTAINER_NAME}"
+        run_in_builder_container "ninja -C out/Release v8_context_snapshot_generator" || \
+            log_error "Failed to build v8_context_snapshot_generator inside ${DOCKER_CONTAINER_NAME}"
+    fi
+
+    # If we touched anything, record the compile timestamp again so dashboard reflects the fix.
+    if [[ -s "$obj_path" ]] && [[ -s "$snapshot_path" ]]; then
+        update_timestamp "compile"
+        log_success "Navigation API artifacts verified (via ${DOCKER_CONTAINER_NAME})"
     fi
 }
 
