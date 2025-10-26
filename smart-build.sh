@@ -74,7 +74,7 @@ LIBVPX_DIR="/work/external/libvpx-rtc"
 LIBAOM_DIR="/work/external/libaom-rtc"
 EXPECTED_LIBVPX_COMMIT="4c1801be20dd53900d2a7cd74f6fc91a9ae353be"
 EXPECTED_LIBAOM_COMMIT="8ed60aac823eaf760cf858bc83b89649e148f043"
-NPROC=$(nproc || echo 4)
+NPROC=$(echo 7)
 
 mkdir -p "$DEPS_DIR/lib" \
          "$DEPS_DIR/include/aom" \
@@ -1157,7 +1157,7 @@ main() {
                 log_info "Rust sysroot: $(rustc --print sysroot)"
 
                 cd "$SRC_DIR"
-                ninja -C out/Release -j8 "$target"
+                ninja -C out/Release -j7 "$target"
                 cd - > /dev/null
                 log_success "Ninja rebuild completed"
             else

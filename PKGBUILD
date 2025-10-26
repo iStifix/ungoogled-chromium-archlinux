@@ -11,15 +11,15 @@
 
 pkgbase=ungoogled-chromium-baikal
 pkgname=("$pkgbase")
-pkgver=140.0.7339.207
-pkgrel=2
+pkgver=141.0.7390.122
+pkgrel=1
 _launcher_ver=8
 _manual_clone=1
 _system_clang=1
 # ungoogled chromium variables
 _pkgname=ungoogled-chromium
 _uc_usr=ungoogled-software
-_uc_ver=140.0.7339.207-1
+_uc_ver=141.0.7390.122-1
 pkgdesc="A lightweight approach to removing Google web service dependency"
 arch=('x86_64' 'aarch64')
 url="https://github.com/ungoogled-software/ungoogled-chromium"
@@ -32,8 +32,8 @@ depends=('gtk3' 'nss' 'alsa-lib' 'xdg-utils' 'libxss' 'libcups' 'libgcrypt'
          'libwebp' 'libxml2' 'libxslt' 'brotli' 'zlib' 'zstd' 'wayland' 'wayland-protocols'
          'libxkbcommon')
 makedepends=('python' 'gn' 'ninja' 'clang' 'lld' 'gperf' 'nodejs' 'pipewire'
-             'rustup' 'rust-bindgen' 'qt6-base' 'java-runtime-headless'
-             'git' 'cups')
+             'rust' 'rust-bindgen' 'qt6-base' 'java-runtime-headless'
+             'git' 'cups' 'compiler-rt')
 optdepends=('pipewire: WebRTC desktop sharing under Wayland'
             'kdialog: support for native dialogs in Plasma'
             'gtk4: for --gtk-version=4 (GTK4 IME might work better on Wayland)'
@@ -57,7 +57,7 @@ source=(https://commondatastorage.googleapis.com/chromium-browser-official/chrom
         0001-vaapi-flag-ozone-wayland.patch
         chromium-138-nodejs-version-check.patch
         chromium-138-rust-1.86-mismatched_lifetime_syntaxes.patch
-        chromium-140.0.7339.41-rust.patch
+        chromium-141-cssstylesheet-iwyu.patch
         chromium-rx550-device-names.patch
         chromium-rust-allocator-duplicate-attrs.patch
         vaapi-hardware-acceleration.patch
@@ -67,21 +67,21 @@ source=(https://commondatastorage.googleapis.com/chromium-browser-official/chrom
 sha256sums=('f8136322daf003564966d00ae82b7347cd74f143f54866bdf0d7dbae8f983647'
             '6592c09f06a2adcbfc8dba3e216dc3a08ca2f8c940fc2725af90c5d042404be9'
             '213e50f48b67feb4441078d50b0fd431df34323be15be97c55302d3fdac4483a'
-            '75681c815bb2a8c102f0d7af3a3790b5012adbbce38780716b257b7da2e1c3d5'
+            'ec8e49b7114e2fa2d359155c9ef722ff1ba5fe2c518fa48e30863d71d3b82863'
             'd634d2ce1fc63da7ac41f432b1e84c59b7cceabf19d510848a7cff40c8025342'
             'e6da901e4d0860058dc2f90c6bbcdc38a0cf4b0a69122000f62204f24fa7e374'
             '8ba5c67b7eb6cacd2dbbc29e6766169f0fca3bbb07779b1a0a76c913f17d343f'
-            'd765d63364d354a4fea31804daf3e07a0257945b7fcfc54bef10bb9942f6c294'
             '2a44756404e13c97d000cc0d859604d6848163998ea2f838b3b9bb2c840967e3'
             'd9974ddb50777be428fd0fa1e01ffe4b587065ba6adefea33678e1b3e25d1285'
             'a2da75d0c20529f2d635050e0662941c0820264ea9371eb900b9d90b5968fa6a'
             '9a5594293616e1390462af1f50276ee29fd6075ffab0e3f944f6346cb2eb8aec'
             '11a96ffa21448ec4c63dd5c8d6795a1998d8e5cd5a689d91aea4d2bdd13fb06e'
             '5abc8611463b3097fc5ce58017ef918af8b70d616ad093b8b486d017d021bbdf'
-            '0eb47afd031188cf5a3f0502f3025a73a1799dfa52dff9906db5a3c2af24e2eb'
+            'de5c873564b09713b65dd9e6a0b9049d7b3cf8f881436f36e1c091824b63e876'
             'd5d0db9443ba743597fac5031c7e57a2b289db214d7bf0e28550140dd88fdaa6'
+            'd765d63364d354a4fea31804daf3e07a0257945b7fcfc54bef10bb9942f6c294'
             '519c13cab4e41042970a525fc16e8f4ba0d41f008711e2d64e0a4c6014a10d50'
-            '5900ba7fd1527e622ef8f9fcb542b7f874a7abaf994d944e2bb315d8294547ed'
+            'b0462759c6d8a56a3a2516dad6b1cc621a98b2399c0cb458031cf7743012f395'
             '6f178493285330020d4c47b83487f1dd2ea077ca349772d3d4009c8e2bd749b7'
             'f3e7874db0042561e474d1e3eb67a3764bd4c3a119e1175c45b9599b13c77457')
 
@@ -173,10 +173,10 @@ prepare() {
 
   # Fixes from Gentoo
   patch -Np1 -i ../chromium-138-nodejs-version-check.patch
+  patch -Np1 -i ../chromium-141-cssstylesheet-iwyu.patch
 
   # Fixes from NixOS
   patch -Np1 -i ../chromium-138-rust-1.86-mismatched_lifetime_syntaxes.patch
-  patch -Np1 -i ../chromium-140.0.7339.41-rust.patch
 
   # Allow libclang_rt.builtins from compiler-rt >= 16 to be used
   patch -Np1 -i ../compiler-rt-adjust-paths.patch
@@ -282,8 +282,6 @@ prepare() {
 }
 
 build() {
-  rustup toolchain install 1.86.0
-  rustup default 1.86.0
 
   cd chromium-$pkgver
 
@@ -352,6 +350,7 @@ build() {
     "moc_qt6_path=\"/usr/lib/qt6\""
     "enable_platform_hevc=true"
     "enable_hevc_parser_and_hw_decoder=true"
+    'use_clang_modules=false'
   )
 
   if [[ $_target_cpu == "arm64" ]]; then
