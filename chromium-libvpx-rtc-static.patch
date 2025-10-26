@@ -1,0 +1,19 @@
+--- BUILD.gn.backup	2025-10-24 20:17:28.804650871 +0000
++++ BUILD.gn	2025-10-24 20:20:26.244356573 +0000
+@@ -51,13 +51,11 @@
+   ]
+ }
+ 
+-# Stub for VA-API dependency - system libvpx already contains full encoder implementation
+-# including rate control functionality needed by VA-API hardware encoding
++# RTC library for VA-API hardware encoding
++# Uses static libraries from //deps/lib/ with full RTC API support
+ source_set("libvpxrc") {
+-  # No sources needed - system libvpx.so contains all necessary symbols
+-  public_deps = [ ":libvpx" ]
+   public_configs = [
+-    ":system_libvpx",
+     ":libvpx_rc_link_settings",
++    ":libvpx_internal_headers",
+   ]
+ }

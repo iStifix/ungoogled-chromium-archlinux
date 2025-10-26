@@ -60,6 +60,147 @@ run_in_builder_container() {
     docker exec -u builder -w "$DOCKER_WORKDIR" "$DOCKER_CONTAINER_NAME" bash -lc "$cmd"
 }
 
+ensure_codec_rate_control_libs() {
+    local deps_dir="$PWD/deps"
+    mkdir -p "$deps_dir/lib" "$deps_dir/include"
+
+    local build_script
+    build_script=$(cat <<'EOF'
+set -euo pipefail
+
+DEPS_DIR="/work/deps"
+SRC_DEPS_DIR="/work/src/chromium-140.0.7339.207/deps"
+LIBVPX_DIR="/work/external/libvpx-rtc"
+LIBAOM_DIR="/work/external/libaom-rtc"
+EXPECTED_LIBVPX_COMMIT="4c1801be20dd53900d2a7cd74f6fc91a9ae353be"
+EXPECTED_LIBAOM_COMMIT="8ed60aac823eaf760cf858bc83b89649e148f043"
+NPROC=$(nproc || echo 4)
+
+mkdir -p "$DEPS_DIR/lib" \
+         "$DEPS_DIR/include/aom" \
+         "$DEPS_DIR/include/av1" \
+         "$DEPS_DIR/include/vpx" \
+         "$DEPS_DIR/include/vpx/internal"
+
+mkdir -p "$SRC_DEPS_DIR/lib" \
+         "$SRC_DEPS_DIR/include/aom" \
+         "$SRC_DEPS_DIR/include/av1" \
+         "$SRC_DEPS_DIR/include/vpx" \
+         "$SRC_DEPS_DIR/include/vpx/internal"
+
+mkdir -p /work/external
+
+current_libvpx_commit=""
+if [[ -f "$DEPS_DIR/.libvpxrc_commit" ]]; then
+    current_libvpx_commit=$(cat "$DEPS_DIR/.libvpxrc_commit")
+fi
+
+if [[ "$current_libvpx_commit" != "$EXPECTED_LIBVPX_COMMIT" ]]; then
+    rm -rf "$LIBVPX_DIR"
+fi
+
+if [[ ! -d "$LIBVPX_DIR/.git" ]]; then
+    rm -rf "$LIBVPX_DIR"
+    git clone https://chromium.googlesource.com/webm/libvpx "$LIBVPX_DIR"
+fi
+
+(
+    cd "$LIBVPX_DIR"
+    git fetch origin "$EXPECTED_LIBVPX_COMMIT" --quiet || true
+    git checkout "$EXPECTED_LIBVPX_COMMIT"
+    repo_commit=$(git rev-parse HEAD)
+
+    if [[ "$current_libvpx_commit" != "$repo_commit" ]] || \
+       [[ ! -f "$DEPS_DIR/lib/libvpxrc.a" ]] || \
+       [[ ! -f "$SRC_DEPS_DIR/lib/libvpxrc.a" ]]; then
+        make distclean >/dev/null 2>&1 || true
+        CC=clang CXX=clang++ AR=llvm-ar NM=llvm-nm RANLIB=llvm-ranlib \
+            ./configure --target=arm64-linux-gcc \
+                        --enable-vp9 \
+                        --enable-vp8 \
+                        --enable-vp9-highbitdepth \
+                        --disable-examples \
+                        --disable-docs \
+                        --disable-unit-tests \
+                        --prefix=/work/external/libvpx-rtc/install
+        make -j"$NPROC"
+
+        install -Dm644 libvpxrc.a "$DEPS_DIR/lib/libvpxrc.a"
+        install -Dm644 libvpxrc.a "$SRC_DEPS_DIR/lib/libvpxrc.a"
+        install -Dm644 libvpx.a "$DEPS_DIR/lib/libvpx.a"
+        install -Dm644 libvpx.a "$SRC_DEPS_DIR/lib/libvpx.a"
+        install -Dm644 vpx/vpx_ext_ratectrl.h "$DEPS_DIR/include/vpx/vpx_ext_ratectrl.h"
+        install -Dm644 vpx/vpx_ext_ratectrl.h "$SRC_DEPS_DIR/include/vpx/vpx_ext_ratectrl.h"
+        install -Dm644 vpx/internal/vpx_ratectrl_rtc.h "$DEPS_DIR/include/vpx/internal/vpx_ratectrl_rtc.h"
+        install -Dm644 vpx/internal/vpx_ratectrl_rtc.h "$SRC_DEPS_DIR/include/vpx/internal/vpx_ratectrl_rtc.h"
+
+        echo "$repo_commit" > "$DEPS_DIR/.libvpxrc_commit"
+    fi
+)
+
+current_libaom_commit=""
+if [[ -f "$DEPS_DIR/.libaom_rc_commit" ]]; then
+    current_libaom_commit=$(cat "$DEPS_DIR/.libaom_rc_commit")
+fi
+
+if [[ "$current_libaom_commit" != "$EXPECTED_LIBAOM_COMMIT" ]]; then
+    rm -rf "$LIBAOM_DIR"
+fi
+
+if [[ ! -d "$LIBAOM_DIR/.git" ]]; then
+    rm -rf "$LIBAOM_DIR"
+    git clone https://aomedia.googlesource.com/aom "$LIBAOM_DIR"
+fi
+
+(
+    cd "$LIBAOM_DIR"
+    git fetch origin "$EXPECTED_LIBAOM_COMMIT" --quiet || true
+    git checkout "$EXPECTED_LIBAOM_COMMIT"
+    repo_commit=$(git rev-parse HEAD)
+
+    if [[ "$current_libaom_commit" != "$repo_commit" ]] || \
+       [[ ! -f "$DEPS_DIR/lib/libaom_av1_rc.a" ]] || \
+       [[ ! -f "$SRC_DEPS_DIR/lib/libaom_av1_rc.a" ]]; then
+        rm -rf out-rtc
+        cmake -S . -B out-rtc \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/work/external/libaom-rtc/install \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DENABLE_DOCS=OFF \
+            -DENABLE_TESTS=OFF \
+            -DENABLE_EXAMPLES=OFF \
+            -DAOM_EXTRA_WARNINGS=OFF \
+            -DCONFIG_AV1_ENCODER=1 \
+            -DCONFIG_AV1_DECODER=0
+
+        cmake --build out-rtc --target aom_av1_rc -j"$NPROC"
+
+        install -Dm644 out-rtc/libaom_av1_rc.a "$DEPS_DIR/lib/libaom_av1_rc.a"
+        install -Dm644 out-rtc/libaom_av1_rc.a "$SRC_DEPS_DIR/lib/libaom_av1_rc.a"
+        install -Dm644 out-rtc/libaom.a "$DEPS_DIR/lib/libaom.a"
+        install -Dm644 out-rtc/libaom.a "$SRC_DEPS_DIR/lib/libaom.a"
+        install -Dm644 av1/ratectrl_rtc.h "$DEPS_DIR/include/av1/ratectrl_rtc.h"
+        install -Dm644 av1/ratectrl_rtc.h "$SRC_DEPS_DIR/include/av1/ratectrl_rtc.h"
+        install -Dm644 aom/aom_ext_ratectrl.h "$DEPS_DIR/include/aom/aom_ext_ratectrl.h"
+        install -Dm644 aom/aom_ext_ratectrl.h "$SRC_DEPS_DIR/include/aom/aom_ext_ratectrl.h"
+
+        echo "$repo_commit" > "$DEPS_DIR/.libaom_rc_commit"
+    fi
+)
+EOF
+)
+
+    if is_inside_docker; then
+        bash -lc "$build_script"
+    else
+        if ! docker_container_online; then
+            log_warning "Docker container ${DOCKER_CONTAINER_NAME} is not running; skipping codec RTC libraries build"
+            return 0
+        fi
+        run_in_builder_container "$build_script"
+    fi
+}
+
 # Check if we're in the right directory
 if [[ ! -f "PKGBUILD" ]]; then
     log_error "Please run this script from the ungoogled-chromium-archlinux directory"
@@ -196,6 +337,8 @@ stage_prepare() {
     # If no rebuild needed, patches applied, and no missing files, skip completely
     if [[ "$need_rebuild" == "false" ]] && [[ -d "$SRC_DIR" ]] && [[ -f "$SRC_DIR/.patches_applied" ]] && [[ "$missing_files" == "false" ]]; then
         log_success "Prepare stage: UP TO DATE (skipping)"
+        ensure_codec_rate_control_libs || return 1
+        update_timestamp "prepare"
         return 0
     fi
 
@@ -340,6 +483,7 @@ stage_prepare() {
             fi
         fi
 
+        ensure_codec_rate_control_libs || return 1
         update_timestamp "prepare"
         log_success "Prepare stage: COMPLETED (reused existing sources)"
     else
@@ -384,7 +528,7 @@ stage_prepare() {
             else
                 log_warning "fetch-libvpx-rtc.sh not found or not executable"
             fi
-
+            ensure_codec_rate_control_libs || return 1
             update_timestamp "prepare"
             log_success "Prepare stage: COMPLETED"
         else
@@ -586,13 +730,13 @@ stage_configure() {
     python3 build/linux/unbundle/replace_gn_files.py --undo >/dev/null 2>&1 || true
 
     # Use modern system libraries from /usr/lib (Arch Linux ARM aarch64)
-    # Using system libvpx/libaom (full encoder support, no need for RTC sources)
+    # Using bundled libvpx/libaom with RTC (Rate Control) API for VAAPI hardware encoding
     # Bundled libdrm (old Debian version lacks drmSyncobjEventfd)
     # Bundled dav1d for consistency
-    log_info "Configuring to use system libraries (bundled: dav1d, libdrm)"
+    log_info "Configuring to use system libraries (bundled: dav1d, libdrm, libvpx, libaom)"
     python3 build/linux/unbundle/replace_gn_files.py --system-libraries \
         fontconfig freetype harfbuzz-ng libjpeg libpng libwebp libxml libxslt \
-        opus flac zlib brotli libvpx libaom 2>&1 | head -5
+        opus flac zlib brotli 2>&1 | head -5
 
     log_success "Configured to use Arch Linux ARM libraries (native)"
 
@@ -636,7 +780,8 @@ stage_configure() {
         "clang_base_path=\"/usr\""
         "chrome_pgo_phase=0"
         "rust_bindgen_root=\"/usr\""
-        "use_system_libvpx=false"
+        "use_system_libvpx=false"  # Use bundled libvpx with RTC API from deps/lib/
+        "use_system_libaom=false"   # Use bundled libaom with RTC API from deps/lib/
         "is_cfi=false"
         "enable_nacl=false"
         "use_thin_lto=false"  # Disabled: causes issues with OpenGL/EGL driver calls

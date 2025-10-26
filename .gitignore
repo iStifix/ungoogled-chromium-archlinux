@@ -23,3 +23,9 @@ pkgdest/
 build-summary.txt
 
 CLAUDE.md
+
+export.log
+
+external/
+
+tmp-libvpx
