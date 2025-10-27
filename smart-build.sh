@@ -22,6 +22,24 @@ NC='\033[0m'
 
 DOCKER_CONTAINER_NAME="${DOCKER_CONTAINER_NAME:-chromium-arm64-builder}"
 
+# ============================================================================
+# CHROMIUM VERSION DETECTION (Single Source of Truth from PKGBUILD)
+# ============================================================================
+# Automatically read Chromium version from PKGBUILD to avoid manual updates
+# This ensures version is always in sync across all build stages
+if [[ -f "PKGBUILD" ]]; then
+    CHROMIUM_VERSION=$(grep '^pkgver=' PKGBUILD | cut -d= -f2)
+    if [[ -z "$CHROMIUM_VERSION" ]]; then
+        echo -e "${RED}[ERROR]${NC} Failed to detect Chromium version from PKGBUILD"
+        exit 1
+    fi
+    echo -e "${GREEN}[INFO]${NC} Detected Chromium version: ${CHROMIUM_VERSION}"
+else
+    echo -e "${RED}[ERROR]${NC} PKGBUILD not found. Please run this script from ungoogled-chromium directory"
+    exit 1
+fi
+export CHROMIUM_VERSION
+
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
@@ -64,55 +82,58 @@ ensure_codec_rate_control_libs() {
     local deps_dir="$PWD/deps"
     mkdir -p "$deps_dir/lib" "$deps_dir/include"
 
+    # Pass CHROMIUM_VERSION to the build script via environment
     local build_script
-    build_script=$(cat <<'EOF'
+    build_script=$(cat <<EOF
 set -euo pipefail
 
+# Use CHROMIUM_VERSION from parent script (passed via environment)
+CHROMIUM_VERSION="${CHROMIUM_VERSION}"
 DEPS_DIR="/work/deps"
-SRC_DEPS_DIR="/work/src/chromium-140.0.7339.207/deps"
+SRC_DEPS_DIR="/work/src/chromium-\${CHROMIUM_VERSION}/deps"
 LIBVPX_DIR="/work/external/libvpx-rtc"
 LIBAOM_DIR="/work/external/libaom-rtc"
 EXPECTED_LIBVPX_COMMIT="4c1801be20dd53900d2a7cd74f6fc91a9ae353be"
 EXPECTED_LIBAOM_COMMIT="8ed60aac823eaf760cf858bc83b89649e148f043"
-NPROC=$(echo 7)
+NPROC=\$(echo 7)
 
-mkdir -p "$DEPS_DIR/lib" \
-         "$DEPS_DIR/include/aom" \
-         "$DEPS_DIR/include/av1" \
-         "$DEPS_DIR/include/vpx" \
-         "$DEPS_DIR/include/vpx/internal"
+mkdir -p "\$DEPS_DIR/lib" \
+         "\$DEPS_DIR/include/aom" \
+         "\$DEPS_DIR/include/av1" \
+         "\$DEPS_DIR/include/vpx" \
+         "\$DEPS_DIR/include/vpx/internal"
 
-mkdir -p "$SRC_DEPS_DIR/lib" \
-         "$SRC_DEPS_DIR/include/aom" \
-         "$SRC_DEPS_DIR/include/av1" \
-         "$SRC_DEPS_DIR/include/vpx" \
-         "$SRC_DEPS_DIR/include/vpx/internal"
+mkdir -p "\$SRC_DEPS_DIR/lib" \
+         "\$SRC_DEPS_DIR/include/aom" \
+         "\$SRC_DEPS_DIR/include/av1" \
+         "\$SRC_DEPS_DIR/include/vpx" \
+         "\$SRC_DEPS_DIR/include/vpx/internal"
 
 mkdir -p /work/external
 
 current_libvpx_commit=""
-if [[ -f "$DEPS_DIR/.libvpxrc_commit" ]]; then
-    current_libvpx_commit=$(cat "$DEPS_DIR/.libvpxrc_commit")
+if [[ -f "\$DEPS_DIR/.libvpxrc_commit" ]]; then
+    current_libvpx_commit=\$(cat "\$DEPS_DIR/.libvpxrc_commit")
 fi
 
-if [[ "$current_libvpx_commit" != "$EXPECTED_LIBVPX_COMMIT" ]]; then
-    rm -rf "$LIBVPX_DIR"
+if [[ "\$current_libvpx_commit" != "\$EXPECTED_LIBVPX_COMMIT" ]]; then
+    rm -rf "\$LIBVPX_DIR"
 fi
 
-if [[ ! -d "$LIBVPX_DIR/.git" ]]; then
-    rm -rf "$LIBVPX_DIR"
-    git clone https://chromium.googlesource.com/webm/libvpx "$LIBVPX_DIR"
+if [[ ! -d "\$LIBVPX_DIR/.git" ]]; then
+    rm -rf "\$LIBVPX_DIR"
+    git clone https://chromium.googlesource.com/webm/libvpx "\$LIBVPX_DIR"
 fi
 
 (
-    cd "$LIBVPX_DIR"
-    git fetch origin "$EXPECTED_LIBVPX_COMMIT" --quiet || true
-    git checkout "$EXPECTED_LIBVPX_COMMIT"
-    repo_commit=$(git rev-parse HEAD)
+    cd "\$LIBVPX_DIR"
+    git fetch origin "\$EXPECTED_LIBVPX_COMMIT" --quiet || true
+    git checkout "\$EXPECTED_LIBVPX_COMMIT"
+    repo_commit=\$(git rev-parse HEAD)
 
-    if [[ "$current_libvpx_commit" != "$repo_commit" ]] || \
-       [[ ! -f "$DEPS_DIR/lib/libvpxrc.a" ]] || \
-       [[ ! -f "$SRC_DEPS_DIR/lib/libvpxrc.a" ]]; then
+    if [[ "\$current_libvpx_commit" != "\$repo_commit" ]] || \
+       [[ ! -f "\$DEPS_DIR/lib/libvpxrc.a" ]] || \
+       [[ ! -f "\$SRC_DEPS_DIR/lib/libvpxrc.a" ]]; then
         make distclean >/dev/null 2>&1 || true
         CC=clang CXX=clang++ AR=llvm-ar NM=llvm-nm RANLIB=llvm-ranlib \
             ./configure --target=arm64-linux-gcc \
@@ -123,46 +144,46 @@ fi
                         --disable-docs \
                         --disable-unit-tests \
                         --prefix=/work/external/libvpx-rtc/install
-        make -j"$NPROC"
+        make -j"\$NPROC"
 
-        install -Dm644 libvpxrc.a "$DEPS_DIR/lib/libvpxrc.a"
-        install -Dm644 libvpxrc.a "$SRC_DEPS_DIR/lib/libvpxrc.a"
-        install -Dm644 libvpx.a "$DEPS_DIR/lib/libvpx.a"
-        install -Dm644 libvpx.a "$SRC_DEPS_DIR/lib/libvpx.a"
-        install -Dm644 vpx/vpx_ext_ratectrl.h "$DEPS_DIR/include/vpx/vpx_ext_ratectrl.h"
-        install -Dm644 vpx/vpx_ext_ratectrl.h "$SRC_DEPS_DIR/include/vpx/vpx_ext_ratectrl.h"
-        install -Dm644 vpx/internal/vpx_ratectrl_rtc.h "$DEPS_DIR/include/vpx/internal/vpx_ratectrl_rtc.h"
-        install -Dm644 vpx/internal/vpx_ratectrl_rtc.h "$SRC_DEPS_DIR/include/vpx/internal/vpx_ratectrl_rtc.h"
+        install -Dm644 libvpxrc.a "\$DEPS_DIR/lib/libvpxrc.a"
+        install -Dm644 libvpxrc.a "\$SRC_DEPS_DIR/lib/libvpxrc.a"
+        install -Dm644 libvpx.a "\$DEPS_DIR/lib/libvpx.a"
+        install -Dm644 libvpx.a "\$SRC_DEPS_DIR/lib/libvpx.a"
+        install -Dm644 vpx/vpx_ext_ratectrl.h "\$DEPS_DIR/include/vpx/vpx_ext_ratectrl.h"
+        install -Dm644 vpx/vpx_ext_ratectrl.h "\$SRC_DEPS_DIR/include/vpx/vpx_ext_ratectrl.h"
+        install -Dm644 vpx/internal/vpx_ratectrl_rtc.h "\$DEPS_DIR/include/vpx/internal/vpx_ratectrl_rtc.h"
+        install -Dm644 vpx/internal/vpx_ratectrl_rtc.h "\$SRC_DEPS_DIR/include/vpx/internal/vpx_ratectrl_rtc.h"
 
-        echo "$repo_commit" > "$DEPS_DIR/.libvpxrc_commit"
+        echo "\$repo_commit" > "\$DEPS_DIR/.libvpxrc_commit"
     fi
 )
 
 current_libaom_commit=""
-if [[ -f "$DEPS_DIR/.libaom_rc_commit" ]]; then
-    current_libaom_commit=$(cat "$DEPS_DIR/.libaom_rc_commit")
+if [[ -f "\$DEPS_DIR/.libaom_rc_commit" ]]; then
+    current_libaom_commit=\$(cat "\$DEPS_DIR/.libaom_rc_commit")
 fi
 
-if [[ "$current_libaom_commit" != "$EXPECTED_LIBAOM_COMMIT" ]]; then
-    rm -rf "$LIBAOM_DIR"
+if [[ "\$current_libaom_commit" != "\$EXPECTED_LIBAOM_COMMIT" ]]; then
+    rm -rf "\$LIBAOM_DIR"
 fi
 
-if [[ ! -d "$LIBAOM_DIR/.git" ]]; then
-    rm -rf "$LIBAOM_DIR"
-    git clone https://aomedia.googlesource.com/aom "$LIBAOM_DIR"
+if [[ ! -d "\$LIBAOM_DIR/.git" ]]; then
+    rm -rf "\$LIBAOM_DIR"
+    git clone https://aomedia.googlesource.com/aom "\$LIBAOM_DIR"
 fi
 
 (
-    cd "$LIBAOM_DIR"
-    git fetch origin "$EXPECTED_LIBAOM_COMMIT" --quiet || true
-    git checkout "$EXPECTED_LIBAOM_COMMIT"
-    repo_commit=$(git rev-parse HEAD)
+    cd "\$LIBAOM_DIR"
+    git fetch origin "\$EXPECTED_LIBAOM_COMMIT" --quiet || true
+    git checkout "\$EXPECTED_LIBAOM_COMMIT"
+    repo_commit=\$(git rev-parse HEAD)
 
-    if [[ "$current_libaom_commit" != "$repo_commit" ]] || \
-       [[ ! -f "$DEPS_DIR/lib/libaom_av1_rc.a" ]] || \
-       [[ ! -f "$SRC_DEPS_DIR/lib/libaom_av1_rc.a" ]]; then
+    if [[ "\$current_libaom_commit" != "\$repo_commit" ]] || \
+       [[ ! -f "\$DEPS_DIR/lib/libaom_av1_rc.a" ]] || \
+       [[ ! -f "\$SRC_DEPS_DIR/lib/libaom_av1_rc.a" ]]; then
         rm -rf out-rtc
-        cmake -S . -B out-rtc \
+        CC=clang CXX=clang++ cmake -S . -B out-rtc \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/work/external/libaom-rtc/install \
             -DBUILD_SHARED_LIBS=OFF \
@@ -173,18 +194,18 @@ fi
             -DCONFIG_AV1_ENCODER=1 \
             -DCONFIG_AV1_DECODER=0
 
-        cmake --build out-rtc --target aom_av1_rc -j"$NPROC"
+        cmake --build out-rtc --target aom_av1_rc -j"\$NPROC"
 
-        install -Dm644 out-rtc/libaom_av1_rc.a "$DEPS_DIR/lib/libaom_av1_rc.a"
-        install -Dm644 out-rtc/libaom_av1_rc.a "$SRC_DEPS_DIR/lib/libaom_av1_rc.a"
-        install -Dm644 out-rtc/libaom.a "$DEPS_DIR/lib/libaom.a"
-        install -Dm644 out-rtc/libaom.a "$SRC_DEPS_DIR/lib/libaom.a"
-        install -Dm644 av1/ratectrl_rtc.h "$DEPS_DIR/include/av1/ratectrl_rtc.h"
-        install -Dm644 av1/ratectrl_rtc.h "$SRC_DEPS_DIR/include/av1/ratectrl_rtc.h"
-        install -Dm644 aom/aom_ext_ratectrl.h "$DEPS_DIR/include/aom/aom_ext_ratectrl.h"
-        install -Dm644 aom/aom_ext_ratectrl.h "$SRC_DEPS_DIR/include/aom/aom_ext_ratectrl.h"
+        install -Dm644 out-rtc/libaom_av1_rc.a "\$DEPS_DIR/lib/libaom_av1_rc.a"
+        install -Dm644 out-rtc/libaom_av1_rc.a "\$SRC_DEPS_DIR/lib/libaom_av1_rc.a"
+        install -Dm644 out-rtc/libaom.a "\$DEPS_DIR/lib/libaom.a"
+        install -Dm644 out-rtc/libaom.a "\$SRC_DEPS_DIR/lib/libaom.a"
+        install -Dm644 av1/ratectrl_rtc.h "\$DEPS_DIR/include/av1/ratectrl_rtc.h"
+        install -Dm644 av1/ratectrl_rtc.h "\$SRC_DEPS_DIR/include/av1/ratectrl_rtc.h"
+        install -Dm644 aom/aom_ext_ratectrl.h "\$DEPS_DIR/include/aom/aom_ext_ratectrl.h"
+        install -Dm644 aom/aom_ext_ratectrl.h "\$SRC_DEPS_DIR/include/aom/aom_ext_ratectrl.h"
 
-        echo "$repo_commit" > "$DEPS_DIR/.libaom_rc_commit"
+        echo "\$repo_commit" > "\$DEPS_DIR/.libaom_rc_commit"
     fi
 )
 EOF
@@ -220,8 +241,7 @@ fi
 # Set architecture
 export ARCH=aarch64
 
-# Build configuration
-CHROMIUM_VERSION="140.0.7339.207"
+# Build configuration (CHROMIUM_VERSION is set at top of script from PKGBUILD)
 SRC_DIR="src/chromium-${CHROMIUM_VERSION}"
 OUT_DIR="${SRC_DIR}/out/Release"
 STATE_DIR=".build"
@@ -270,6 +290,9 @@ check_rebuild_needed() {
 update_timestamp() {
     local component="$1"
     local current_time=$(date +%s)
+
+    # Create state directory if it doesn't exist
+    mkdir -p "$STATE_DIR"
 
     # Remove old entry and add new one
     if [[ -f "$TIMESTAMPS_FILE" ]]; then
@@ -450,6 +473,12 @@ stage_prepare() {
                 echo "$actual_rustc_version" > "$SRC_DIR/third_party/rust-toolchain/VERSION"
                 echo "✓ Updated $SRC_DIR/third_party/rust-toolchain/VERSION to: $actual_rustc_version"
             fi
+
+            # NOTE: Previously we had workarounds for catapult/nasm not being checked out.
+            # This was caused by PKGBUILD renaming chromium-checkout/src while gclient sync
+            # was still running. Fixed by using symlink in PKGBUILD instead of rename.
+            # If gclient sync is still running, third_party dependencies will be populated
+            # automatically without manual intervention.
 
             # Fetch libvpx/libaom RTC source files for VA-API (if missing or corrupted)
             local need_fetch=false
@@ -691,10 +720,9 @@ stage_configure() {
     fi
 
     # Cortex-A57 tuning for Baikal-M (already set by cortex-a57-env.sh via CFLAGS)
-    # Additional GN-specific flags
-    local baikal_flags="-fomit-frame-pointer -fno-semantic-interposition"
-    CFLAGS+=" ${baikal_flags}"
-    CXXFLAGS+=" ${baikal_flags}"
+    # NOTE: cortex-a57-env.sh now uses -O2 (not -O3) for stability with WebGL/Canvas
+    # Additional GN-specific flags (already included in cortex-a57-env.sh)
+    # CFLAGS from cortex-a57-env.sh: -march=armv8-a -mtune=cortex-a57 -O2 -ftree-vectorize -fomit-frame-pointer -fno-semantic-interposition
     export CFLAGS CXXFLAGS
 
     # Use standard clang ARM64 toolchain (native build)
@@ -785,9 +813,22 @@ stage_configure() {
         "is_cfi=false"
         "enable_nacl=false"
         "use_thin_lto=false"  # Disabled: causes issues with OpenGL/EGL driver calls
+        "concurrent_links=1"  # Prevent OOM on 8GB RAM system (linking requires ~6-8GB per process)
         "v8_snapshot_toolchain=\"${host_toolchain}\""
+        # Modern codecs and features
+        "rtc_use_h264=true"  # H.264 for WebRTC (video calls)
+        "enable_av1_decoder=true"  # AV1 decoder (via dav1d)
+        # HD Audio formats (critical for HDMI 4K display)
+        "enable_platform_ac3_eac3_audio=true"  # AC3/EAC3 Dolby Digital/Plus
+        "enable_platform_dts_audio=true"  # DTS/DTS-HD audio
+        # HDR video support
+        "enable_platform_dolby_vision=true"  # Dolby Vision HDR
+        # Streaming support
+        "enable_hls_demuxer=true"  # HLS streaming (YouTube, Twitch, etc.)
+        "enable_mse_mpeg2ts_stream_parser=true"  # MPEG-TS parser (required for HLS)
         # Note: Cortex-A57 optimizations passed via CFLAGS from cortex-a57-env.sh
-        #       (-march=armv8-a -mtune=cortex-a57 -O3 -ftree-vectorize)
+        #       (-march=armv8-a -mtune=cortex-a57 -O2 -ftree-vectorize)
+        #       -O2 used instead of -O3 (stability for WebGL/Canvas rendering!)
         #       -ffast-math REMOVED (unsafe for OpenGL/WebGL/VA-API)
         #       arm_float_abi and arm_use_neon are auto-set to "hard" and true for ARM64
     )

@@ -1,0 +1,38 @@
+--- a/BUILD.gn	2025-10-27 18:40:17.111942535 +0000
++++ b/BUILD.gn	2025-10-27 18:47:39.023246568 +0000
+@@ -248,18 +248,7 @@
+     if (!is_ios) {
+       deps += [
+         "//google_apis/gcm:mcs_probe",
+-        "//third_party/catapult/telemetry:bitmaptools($host_toolchain)",
+       ]
+-      if (!is_android) {
+-        if (!is_castos && !is_fuchsia) {
+-          deps += [ "//chrome/test:telemetry_perf_unittests" ]
+-        }
+-      } else {
+-        import("//tools/perf/chrome_telemetry_build/android_browser_types.gni")
+-        foreach(_target_suffix, telemetry_android_browser_target_suffixes) {
+-          deps += [ "//chrome/test:telemetry_perf_unittests${_target_suffix}" ]
+-        }
+-      }
+     } else {
+       deps += [
+         "//ios:all",
+@@ -783,14 +772,7 @@
+       if (!is_android) {
+         deps += [ "//tools/perf/contrib/vr_benchmarks:vr_perf_tests" ]
+       } else {
+-        deps += [ "//chrome/browser/android/vr:vr_android_unittests" ]
+-        import("//tools/perf/chrome_telemetry_build/android_browser_types.gni")
+-        foreach(_target_suffix, telemetry_android_browser_target_suffixes) {
+-          deps += [
+-            "//tools/perf/contrib/vr_benchmarks:vr_perf_tests${_target_suffix}",
+-          ]
+-        }
++        deps += [ "//chrome/browser/android/vr:vr_android_unittests" ]
++      }
+     }
+
+     if (use_atk) {
+

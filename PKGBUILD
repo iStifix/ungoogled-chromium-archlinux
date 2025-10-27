@@ -58,8 +58,11 @@ source=(https://commondatastorage.googleapis.com/chromium-browser-official/chrom
         chromium-138-nodejs-version-check.patch
         chromium-138-rust-1.86-mismatched_lifetime_syntaxes.patch
         chromium-141-cssstylesheet-iwyu.patch
+        chromium-141-remove-telemetry-deps.patch
         chromium-rx550-device-names.patch
-        chromium-rust-allocator-duplicate-attrs.patch
+        libvpx-ratectrl.patch
+        chromium-libvpx-rtc-static.patch
+        chromium-libaom-rtc-static.patch
         vaapi-hardware-acceleration.patch
         fetch-libvpx-rtc.sh
         baikal-chromium-launcher.py
@@ -75,11 +78,13 @@ sha256sums=('f8136322daf003564966d00ae82b7347cd74f143f54866bdf0d7dbae8f983647'
             'd9974ddb50777be428fd0fa1e01ffe4b587065ba6adefea33678e1b3e25d1285'
             'a2da75d0c20529f2d635050e0662941c0820264ea9371eb900b9d90b5968fa6a'
             '9a5594293616e1390462af1f50276ee29fd6075ffab0e3f944f6346cb2eb8aec'
+            '90017978b686a0ce5c82e4a88e073ac8e7c620b2650019f3a99dc0dcc8339914'
             '11a96ffa21448ec4c63dd5c8d6795a1998d8e5cd5a689d91aea4d2bdd13fb06e'
+            '5480b4c519f36915d72016a02bc45dd4fba93442728d129c4337c89230bd9efd'
+            'c9a70a6f26d5275db5a1692f0fa2f39ecc54e0c200209aa8e49653aea9e9c69a'
+            '2f9b2011543b02d2ccd2deec61edfa4614532a88e1acdd03a86e7773c536c668'
             '5abc8611463b3097fc5ce58017ef918af8b70d616ad093b8b486d017d021bbdf'
             'de5c873564b09713b65dd9e6a0b9049d7b3cf8f881436f36e1c091824b63e876'
-            'd5d0db9443ba743597fac5031c7e57a2b289db214d7bf0e28550140dd88fdaa6'
-            'd765d63364d354a4fea31804daf3e07a0257945b7fcfc54bef10bb9942f6c294'
             '519c13cab4e41042970a525fc16e8f4ba0d41f008711e2d64e0a4c6014a10d50'
             'b0462759c6d8a56a3a2516dad6b1cc621a98b2399c0cb458031cf7743012f395'
             '6f178493285330020d4c47b83487f1dd2ea077ca349772d3d4009c8e2bd749b7'
@@ -131,6 +136,13 @@ prepare() {
       # Prevent sysroot download for native ARM64 build
       export GYP_DEFINES="use_sysroot=0"
       ./fetch-chromium-release $pkgver
+
+      # fetch-chromium-release creates chromium-checkout/src
+      # Use symlink instead of rename to let gclient sync complete in background
+      if [[ -d chromium-checkout/src ]]; then
+        msg2 'Creating symlink chromium-$pkgver -> chromium-checkout/src...'
+        ln -sfn chromium-checkout/src chromium-$pkgver
+      fi
     else
       msg2 'Skipping fetch-chromium-release; existing checkout detected.'
     fi
@@ -175,6 +187,9 @@ prepare() {
   patch -Np1 -i ../chromium-138-nodejs-version-check.patch
   patch -Np1 -i ../chromium-141-cssstylesheet-iwyu.patch
 
+  # Fix telemetry dependencies removed by ungoogled-chromium
+  patch -Np1 -i ../chromium-141-remove-telemetry-deps.patch
+
   # Fixes from NixOS
   patch -Np1 -i ../chromium-138-rust-1.86-mismatched_lifetime_syntaxes.patch
 
@@ -187,8 +202,15 @@ prepare() {
   # Ensure AMD Polaris (RX550) is identified correctly
   patch -Np1 -i ../chromium-rx550-device-names.patch
 
-  # Fix Rust allocator duplicate attributes (Rust 1.86.0)
-  patch -Np1 -i ../chromium-rust-allocator-duplicate-attrs.patch
+  # VA-API hardware acceleration patches (CRITICAL for Baikal M)
+  # Apply libvpx/libaom RTC patches for hardware encoding/decoding support
+  patch -Np1 -i ../libvpx-ratectrl.patch
+  patch -Np1 -i ../chromium-libvpx-rtc-static.patch
+  patch -Np1 -i ../chromium-libaom-rtc-static.patch
+
+  # NOTE: chromium-rust-allocator-duplicate-attrs.patch REMOVED
+  # Chromium 141+ already has correct __rust_no_alloc_shim_is_unstable_v2() implementation
+  # smart-build.sh adds missing __rust_no_alloc_shim_is_unstable() (without _v2) in stage_sysroot
 
   # Fixes for building with libstdc++ instead of libc++
 
@@ -290,10 +312,11 @@ build() {
   case "${_build_arch}" in
     aarch64|arm64)
       # Cortex-A57 r1p3 (ARMv8.0-A baseline) - SAFE FLAGS ONLY
+      # NOTE: -O2 (NOT -O3) — для графических приложений/compositor'ов (стабильность WebGL/Canvas!)
       # NOTE: -ffast-math REMOVED — unsafe for OpenGL/WebGL/VA-API (causes rendering artifacts)
-      export CFLAGS="-march=armv8-a -mtune=cortex-a57 -O3 -pipe -fno-plt -fexceptions -ftree-vectorize -fomit-frame-pointer -fno-semantic-interposition"
+      export CFLAGS="-march=armv8-a -mtune=cortex-a57 -O2 -pipe -fno-plt -fexceptions -ftree-vectorize -fomit-frame-pointer -fno-semantic-interposition"
       export CXXFLAGS="${CFLAGS}"
-      export RUSTFLAGS="-C target-cpu=cortex-a57 -C target-feature=+neon,+crc -C opt-level=3"
+      export RUSTFLAGS="-C target-cpu=cortex-a57 -C target-feature=+neon,+crc -C opt-level=3 -C codegen-units=1 -C lto=no"
       export RUSTC_BOOTSTRAP=1
       ;;
   esac
@@ -358,7 +381,9 @@ build() {
     _flags+=("v8_snapshot_toolchain=\"//build/toolchain/linux:clang_arm64\"")
     _flags+=("enable_nacl=false")  # NaCl not supported on ARM64
     _flags+=("use_thin_lto=false")  # Disabled: causes issues with OpenGL/EGL driver calls
+    _flags+=("concurrent_links=1")  # Prevent OOM on 8GB RAM system (linking requires ~6-8GB per process)
     # Note: Cortex-A57 optimizations passed via CFLAGS (-march=armv8-a -mtune=cortex-a57)
+    #       -O2 used instead of -O3 (stability for WebGL/Canvas rendering!)
     #       -ffast-math REMOVED (unsafe for OpenGL/WebGL/VA-API)
     #       arm_float_abi and arm_use_neon are auto-set to "hard" and true for ARM64
     # GPU acceleration optimizations for AMD RX550
@@ -366,6 +391,17 @@ build() {
     _flags+=("use_dawn=true")
     _flags+=("dawn_enable_vulkan=true")
     _flags+=("enable_gpu_service_logging=false")
+    # Modern codecs and features
+    _flags+=("rtc_use_h264=true")  # H.264 for WebRTC (video calls)
+    _flags+=("enable_av1_decoder=true")  # AV1 decoder (via dav1d)
+    # HD Audio formats (critical for HDMI 4K display)
+    _flags+=("enable_platform_ac3_eac3_audio=true")  # AC3/EAC3 Dolby Digital/Plus
+    _flags+=("enable_platform_dts_audio=true")  # DTS/DTS-HD audio
+    # HDR video support
+    _flags+=("enable_platform_dolby_vision=true")  # Dolby Vision HDR
+    # Streaming support
+    _flags+=("enable_hls_demuxer=true")  # HLS streaming (YouTube, Twitch, etc.)
+    _flags+=("enable_mse_mpeg2ts_stream_parser=true")  # MPEG-TS parser (required for HLS)
   fi
 
   if [[ -n ${_system_libs[icu]+set} ]]; then
