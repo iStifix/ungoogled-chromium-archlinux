@@ -122,8 +122,6 @@ declare -gA _system_libs=(
   #[woff2]=woff2      # needs libstdc++
   [zlib]=minizip
 )
-# REMOVED: Old code that disabled all system_libs for ARM64
-# We now use modern Arch Linux libraries for ALL architectures
 
 _unwanted_bundled_libs=(
   $(printf "%s\n" ${!_system_libs[@]} | sed 's/^libjpeg$/&_turbo/')
@@ -137,8 +135,6 @@ prepare() {
       export GYP_DEFINES="use_sysroot=0"
       ./fetch-chromium-release $pkgver
 
-      # fetch-chromium-release creates chromium-checkout/src
-      # Use symlink instead of rename to let gclient sync complete in background
       if [[ -d chromium-checkout/src ]]; then
         msg2 'Creating symlink chromium-$pkgver -> chromium-checkout/src...'
         ln -sfn chromium-checkout/src chromium-$pkgver
@@ -207,10 +203,6 @@ prepare() {
   patch -Np1 -i ../libvpx-ratectrl.patch
   patch -Np1 -i ../chromium-libvpx-rtc-static.patch
   patch -Np1 -i ../chromium-libaom-rtc-static.patch
-
-  # NOTE: chromium-rust-allocator-duplicate-attrs.patch REMOVED
-  # Chromium 141+ already has correct __rust_no_alloc_shim_is_unstable_v2() implementation
-  # smart-build.sh adds missing __rust_no_alloc_shim_is_unstable() (without _v2) in stage_sysroot
 
   # Fixes for building with libstdc++ instead of libc++
 
@@ -312,7 +304,7 @@ build() {
   case "${_build_arch}" in
     aarch64|arm64)
       # Cortex-A57 r1p3 (ARMv8.0-A baseline) - SAFE FLAGS ONLY
-      # NOTE: -O2 (NOT -O3) — для графических приложений/compositor'ов (стабильность WebGL/Canvas!)
+      # NOTE: -O2 (NOT -O3)
       # NOTE: -ffast-math REMOVED — unsafe for OpenGL/WebGL/VA-API (causes rendering artifacts)
       export CFLAGS="-march=armv8-a -mtune=cortex-a57 -O2 -pipe -fno-plt -fexceptions -ftree-vectorize -fomit-frame-pointer -fno-semantic-interposition"
       export CXXFLAGS="${CFLAGS}"

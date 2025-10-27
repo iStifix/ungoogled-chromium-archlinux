@@ -22,11 +22,6 @@ NC='\033[0m'
 
 DOCKER_CONTAINER_NAME="${DOCKER_CONTAINER_NAME:-chromium-arm64-builder}"
 
-# ============================================================================
-# CHROMIUM VERSION DETECTION (Single Source of Truth from PKGBUILD)
-# ============================================================================
-# Automatically read Chromium version from PKGBUILD to avoid manual updates
-# This ensures version is always in sync across all build stages
 if [[ -f "PKGBUILD" ]]; then
     CHROMIUM_VERSION=$(grep '^pkgver=' PKGBUILD | cut -d= -f2)
     if [[ -z "$CHROMIUM_VERSION" ]]; then
@@ -82,12 +77,10 @@ ensure_codec_rate_control_libs() {
     local deps_dir="$PWD/deps"
     mkdir -p "$deps_dir/lib" "$deps_dir/include"
 
-    # Pass CHROMIUM_VERSION to the build script via environment
     local build_script
     build_script=$(cat <<EOF
 set -euo pipefail
 
-# Use CHROMIUM_VERSION from parent script (passed via environment)
 CHROMIUM_VERSION="${CHROMIUM_VERSION}"
 DEPS_DIR="/work/deps"
 SRC_DEPS_DIR="/work/src/chromium-\${CHROMIUM_VERSION}/deps"
@@ -241,14 +234,12 @@ fi
 # Set architecture
 export ARCH=aarch64
 
-# Build configuration (CHROMIUM_VERSION is set at top of script from PKGBUILD)
 SRC_DIR="src/chromium-${CHROMIUM_VERSION}"
 OUT_DIR="${SRC_DIR}/out/Release"
 STATE_DIR=".build"
 TIMESTAMPS_FILE="${STATE_DIR}/timestamps"
 DOCKER_WORKDIR="/work/src/chromium-${CHROMIUM_VERSION}"
 
-# Create state directory
 mkdir -p "$STATE_DIR"
 
 # Function to get file modification time
@@ -474,12 +465,6 @@ stage_prepare() {
                 echo "✓ Updated $SRC_DIR/third_party/rust-toolchain/VERSION to: $actual_rustc_version"
             fi
 
-            # NOTE: Previously we had workarounds for catapult/nasm not being checked out.
-            # This was caused by PKGBUILD renaming chromium-checkout/src while gclient sync
-            # was still running. Fixed by using symlink in PKGBUILD instead of rename.
-            # If gclient sync is still running, third_party dependencies will be populated
-            # automatically without manual intervention.
-
             # Fetch libvpx/libaom RTC source files for VA-API (if missing or corrupted)
             local need_fetch=false
 
@@ -686,8 +671,6 @@ stage_configure() {
     export AR=ar
     export NM=nm
 
-    # Rust environment variables are already set globally at script start
-
     # Verify Rust is using /opt/rust
     local current_sysroot=$(rustc --print sysroot 2>/dev/null || echo "")
     if [[ "$current_sysroot" != "/opt/rust/toolchains/"* ]]; then
@@ -719,10 +702,6 @@ stage_configure() {
         return 1
     fi
 
-    # Cortex-A57 tuning for Baikal-M (already set by cortex-a57-env.sh via CFLAGS)
-    # NOTE: cortex-a57-env.sh now uses -O2 (not -O3) for stability with WebGL/Canvas
-    # Additional GN-specific flags (already included in cortex-a57-env.sh)
-    # CFLAGS from cortex-a57-env.sh: -march=armv8-a -mtune=cortex-a57 -O2 -ftree-vectorize -fomit-frame-pointer -fno-semantic-interposition
     export CFLAGS CXXFLAGS
 
     # Use standard clang ARM64 toolchain (native build)
@@ -757,10 +736,6 @@ stage_configure() {
     # Reset GN library overrides first
     python3 build/linux/unbundle/replace_gn_files.py --undo >/dev/null 2>&1 || true
 
-    # Use modern system libraries from /usr/lib (Arch Linux ARM aarch64)
-    # Using bundled libvpx/libaom with RTC (Rate Control) API for VAAPI hardware encoding
-    # Bundled libdrm (old Debian version lacks drmSyncobjEventfd)
-    # Bundled dav1d for consistency
     log_info "Configuring to use system libraries (bundled: dav1d, libdrm, libvpx, libaom)"
     python3 build/linux/unbundle/replace_gn_files.py --system-libraries \
         fontconfig freetype harfbuzz-ng libjpeg libpng libwebp libxml libxslt \
@@ -826,11 +801,6 @@ stage_configure() {
         # Streaming support
         "enable_hls_demuxer=true"  # HLS streaming (YouTube, Twitch, etc.)
         "enable_mse_mpeg2ts_stream_parser=true"  # MPEG-TS parser (required for HLS)
-        # Note: Cortex-A57 optimizations passed via CFLAGS from cortex-a57-env.sh
-        #       (-march=armv8-a -mtune=cortex-a57 -O2 -ftree-vectorize)
-        #       -O2 used instead of -O3 (stability for WebGL/Canvas rendering!)
-        #       -ffast-math REMOVED (unsafe for OpenGL/WebGL/VA-API)
-        #       arm_float_abi and arm_use_neon are auto-set to "hard" and true for ARM64
     )
 
     # Add Rust sysroot configuration
