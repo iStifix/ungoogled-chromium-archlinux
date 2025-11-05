@@ -801,6 +801,8 @@ stage_configure() {
         # Streaming support
         "enable_hls_demuxer=true"  # HLS streaming (YouTube, Twitch, etc.)
         "enable_mse_mpeg2ts_stream_parser=true"  # MPEG-TS parser (required for HLS)
+        # AI/ML features (required for on-device model inference)
+        "build_with_tflite_lib=true"  # TensorFlow Lite for optimization guide
     )
 
     # Add Rust sysroot configuration
@@ -823,13 +825,21 @@ stage_configure() {
     done
 
     # Then merge ungoogled flags (will override duplicates)
-    local ungoogled_flags_file="../ungoogled-chromium-${CHROMIUM_VERSION}-1/flags.gn"
+    # Path relative to $SRC_DIR (/work/src/chromium-checkout/src in Docker)
+    # ungoogled-chromium is in /work/src/ungoogled-chromium-VERSION-1/
+    local ungoogled_flags_file="../../ungoogled-chromium-${CHROMIUM_VERSION}-1/flags.gn"
     if [[ -f "${ungoogled_flags_file}" ]]; then
+        log_info "Merging ungoogled-chromium flags from ${ungoogled_flags_file}"
         while IFS= read -r line; do
             [[ -z "${line}" ]] && continue
+            [[ "${line}" =~ ^[[:space:]]*# ]] && continue  # Skip comments
             key="${line%%=*}"
             gn_flags_map["$key"]="$line"
         done < "${ungoogled_flags_file}"
+        log_success "Merged $(grep -v '^#' "${ungoogled_flags_file}" | grep -c '=' || echo 0) ungoogled flags"
+    else
+        log_warning "ungoogled-chromium flags.gn not found at ${ungoogled_flags_file}"
+        log_warning "Will use base flags only (missing safe_browsing_mode=0!)"
     fi
 
     # Create args.gn file directly (faster than --args for large configs)
@@ -879,7 +889,8 @@ stage_compile() {
     # Rust environment variables are already set globally at script start
 
     local targets=("chrome" "chrome_sandbox" "chromedriver")
-    local target="${1:-chrome}"
+    # По умолчанию собирать все targets для полного пакета
+    local target="${1:-chrome chrome_sandbox chromedriver}"
 
     if [[ ! -f "${OUT_DIR}/build.ninja" ]]; then
         log_error "Build not configured. Run configure stage first."
@@ -946,7 +957,8 @@ EOF
     # Show compilation progress
     export NINJA_STATUS="[%f/%t %o/s %es] "
 
-    if ninja -C out/Release -j$ninja_jobs "$target"; then
+    # Передаём targets без кавычек для раскрытия в несколько аргументов
+    if ninja -C out/Release -j$ninja_jobs $target; then
         cd - > /dev/null
         update_timestamp "compile"
         log_success "Compile stage: COMPLETED ($target)"
@@ -1152,7 +1164,8 @@ main() {
             stage_configure
             ;;
         "compile")
-            local target="${2:-chrome}"
+            # По умолчанию собирать все targets для полного пакета
+            local target="${2:-chrome chrome_sandbox chromedriver}"
             stage_compile "$target"
             ;;
         "package")
@@ -1160,7 +1173,8 @@ main() {
             ;;
         "ninja")
             # Quick ninja rebuild for code changes
-            local target="${2:-chrome}"
+            # По умолчанию собирать все targets для полного пакета
+            local target="${2:-chrome chrome_sandbox chromedriver}"
             log_info "Quick ninja rebuild: $target"
             if [[ -f "${OUT_DIR}/build.ninja" ]]; then
                 # Rust environment variables are already set globally at script start
@@ -1168,7 +1182,8 @@ main() {
                 log_info "Rust sysroot: $(rustc --print sysroot)"
 
                 cd "$SRC_DIR"
-                ninja -C out/Release -j7 "$target"
+                # Передаём targets без кавычек для раскрытия в несколько аргументов
+                ninja -C out/Release -j7 $target
                 cd - > /dev/null
                 log_success "Ninja rebuild completed"
             else

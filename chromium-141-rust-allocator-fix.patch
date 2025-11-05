@@ -1,0 +1,11 @@
+--- a/build/rust/allocator/lib.rs
++++ b/build/rust/allocator/lib.rs
+@@ -89,8 +89,6 @@
+     #[rustc_std_internal_symbol]
+     #[linkage = "weak"]
+     /// Stable Rust 1.86.0 stdlib expects this symbol (without _v2)
+-    #[rustc_std_internal_symbol]
+-    #[linkage = "weak"]
+     fn __rust_no_alloc_shim_is_unstable() {}
+
+     fn __rust_no_alloc_shim_is_unstable_v2() {}

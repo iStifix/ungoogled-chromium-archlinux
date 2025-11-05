@@ -1,0 +1,31 @@
+--- a/media/formats/mp4/dtsx.h
++++ b/media/formats/mp4/dtsx.h
+@@ -67,7 +67,7 @@ class MEDIA_EXPORT DTSX {
+   uint8_t GetDecoderProfileCode() const;
+   int GetFrameDuration() const;
+   int GetMaxPayload() const;
+-  int GetNumPresentations() const;
++  uint32_t GetNumPresentations() const;
+   uint32_t GetChannelMask() const;
+   int GetSamplingFrequency() const;
+
+@@ -90,7 +90,7 @@ class MEDIA_EXPORT DTSX {
+   int max_payload_ = 0;
+
+   // The num of audio presentations encoded within DTS-UHD elementary stream.
+-  int num_presentations_ = 0;
++  uint32_t num_presentations_ = 0;
+
+   // A bit mask that indicates the channel layout encoded in the default
+   // resentation
+--- a/media/formats/mp4/dtsx.cc
++++ b/media/formats/mp4/dtsx.cc
+@@ -140,7 +140,7 @@ int DTSX::GetMaxPayload() const {
+   return max_payload_;
+ }
+
+-int DTSX::GetNumPresentations() const {
++uint32_t DTSX::GetNumPresentations() const {
+   return num_presentations_;
+ }
+

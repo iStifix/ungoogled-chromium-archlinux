@@ -1,0 +1,31 @@
+--- a/media/formats/dts/dts_stream_parser.cc
++++ b/media/formats/dts/dts_stream_parser.cc
+@@ -31,21 +31,21 @@ int DTSStreamParser::ParseFrameHeader(const uint8_t* data,
+
+   // Read and validate Sync word.
+   uint32_t sync_word = 0;
+-  reader.ReadBits(32, &sync_word);
++  if (!reader.ReadBits(32, &sync_word)) return 0;
+   if (sync_word != kDTSCoreSyncWord)
+     return 0;
+
+-  int fsize = 0, ext_audio = 0, ext_audio_id = 0, nblks = 0, sfreq = 0;
++  uint32_t fsize = 0, ext_audio = 0, ext_audio_id = 0, nblks = 0, sfreq = 0;
+
+   // Skip ftype(1-bit) + DeficitSample Count(5-bits) + CRC Present Flag(1-bit)
+   reader.SkipBits(7);
+-  reader.ReadBits(7, &nblks);
+-  reader.ReadBits(14, &fsize);
++  if (!reader.ReadBits(7, &nblks)) return 0;
++  if (!reader.ReadBits(14, &fsize)) return 0;
+   reader.SkipBits(6);  // Skip AMODE
+-  reader.ReadBits(4, &sfreq);
++  if (!reader.ReadBits(4, &sfreq)) return 0;
+   reader.SkipBits(10);  // Skip: RATE, FixedBit, DNYF, TIMEF, AUSX, HDCD
+-  reader.ReadBits(3, &ext_audio_id);
+-  reader.ReadBits(1, &ext_audio);
++  if (!reader.ReadBits(3, &ext_audio_id)) return 0;
++  if (!reader.ReadBits(1, &ext_audio)) return 0;
+
+   constexpr int kSampleRateCore[16] = {0,     8000,  16000, 32000, 0, 0,
+                                        11025, 22050, 44100, 0,     0, 12000,

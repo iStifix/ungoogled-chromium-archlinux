@@ -1,0 +1,30 @@
+--- a/chrome/browser/safe_browsing/BUILD.gn
++++ b/chrome/browser/safe_browsing/BUILD.gn
+@@ -102,6 +102,11 @@ static_library("safe_browsing") {
+     allow_circular_includes_from += [ "//chrome/browser/ash/file_manager" ]
+   }
+
++  # Initialize variables for ungoogled-chromium (safe_browsing_mode=0)
++  # These were inside if(false) block, need to exist for += operations
++  sources = []
++  deps = []
++  allow_circular_includes_from = []
+
+   if (safe_browsing_mode != 0) {
+     # "Safe Browsing Basic" files used for safe browsing in full mode
+--- a/components/safe_browsing/content/browser/BUILD.gn
++++ b/components/safe_browsing/content/browser/BUILD.gn
+@@ -274,6 +274,8 @@ if (safe_browsing_mode != 0) {
+     ]
+   }
+
++  # client_side_detection depends on client_side_detection_service
++if (safe_browsing_mode != 0) {
+   source_set("client_side_detection") {
+     sources = [
+       "client_side_detection_host.cc",
+@@ -320,4 +322,5 @@ if (safe_browsing_mode != 0) {
+     }
+   }
+ }
++}

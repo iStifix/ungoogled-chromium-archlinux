@@ -59,18 +59,22 @@ source=(https://commondatastorage.googleapis.com/chromium-browser-official/chrom
         chromium-138-rust-1.86-mismatched_lifetime_syntaxes.patch
         chromium-141-cssstylesheet-iwyu.patch
         chromium-141-remove-telemetry-deps.patch
+        chromium-141-rust-allocator-fix.patch
+        chromium-141-dtsx-unsigned-fix.patch
+        chromium-141-dts-parser-unsigned-fix.patch
         chromium-rx550-device-names.patch
         libvpx-ratectrl.patch
         chromium-libvpx-rtc-static.patch
         chromium-libaom-rtc-static.patch
         vaapi-hardware-acceleration.patch
+        fix-safe-browsing-sources.patch
         fetch-libvpx-rtc.sh
         baikal-chromium-launcher.py
         baikal-chromium-flags.conf)
 sha256sums=('f8136322daf003564966d00ae82b7347cd74f143f54866bdf0d7dbae8f983647'
             '6592c09f06a2adcbfc8dba3e216dc3a08ca2f8c940fc2725af90c5d042404be9'
             '213e50f48b67feb4441078d50b0fd431df34323be15be97c55302d3fdac4483a'
-            'ec8e49b7114e2fa2d359155c9ef722ff1ba5fe2c518fa48e30863d71d3b82863'
+            '1b58c59f09c38bc2ab3b8c88a37e805d4d609d73cbb81406a56ef1350a057f14'
             'd634d2ce1fc63da7ac41f432b1e84c59b7cceabf19d510848a7cff40c8025342'
             'e6da901e4d0860058dc2f90c6bbcdc38a0cf4b0a69122000f62204f24fa7e374'
             '8ba5c67b7eb6cacd2dbbc29e6766169f0fca3bbb07779b1a0a76c913f17d343f'
@@ -78,15 +82,19 @@ sha256sums=('f8136322daf003564966d00ae82b7347cd74f143f54866bdf0d7dbae8f983647'
             'd9974ddb50777be428fd0fa1e01ffe4b587065ba6adefea33678e1b3e25d1285'
             'a2da75d0c20529f2d635050e0662941c0820264ea9371eb900b9d90b5968fa6a'
             '9a5594293616e1390462af1f50276ee29fd6075ffab0e3f944f6346cb2eb8aec'
-            '90017978b686a0ce5c82e4a88e073ac8e7c620b2650019f3a99dc0dcc8339914'
+            '9b817e7902254a2e8f7b680436518af8c78e071fff3b51b3f286d7e370bf67a9'
             '11a96ffa21448ec4c63dd5c8d6795a1998d8e5cd5a689d91aea4d2bdd13fb06e'
-            '5480b4c519f36915d72016a02bc45dd4fba93442728d129c4337c89230bd9efd'
-            'c9a70a6f26d5275db5a1692f0fa2f39ecc54e0c200209aa8e49653aea9e9c69a'
-            '2f9b2011543b02d2ccd2deec61edfa4614532a88e1acdd03a86e7773c536c668'
+            '45fdd44a1dbc10726d61a37298fa688878e4f581a9a7ee15c28d6318580ea650'
+            '9abed42c6e0a4dfe37c107ee266e704f1e25662f27e0205e0881429d313cec26'
+            '27e6fc186ea7c3925c017d63d6993169735b94acff64b408e95c0747c31c14f2'
+            '0f714f108df596cf6281bd47c2224a3391904e3caeec6479a82f96878e4af402'
+            '22d18a3e230c0419ac3d4d232e8a7048033c2f99f9702d75aee85e05efb6c766'
+            'abd26e4aa634a4def71ee6c7cf1600ddf29b7dad19a5d1d847a5cd8055a072e2'
             '5abc8611463b3097fc5ce58017ef918af8b70d616ad093b8b486d017d021bbdf'
             'de5c873564b09713b65dd9e6a0b9049d7b3cf8f881436f36e1c091824b63e876'
-            '519c13cab4e41042970a525fc16e8f4ba0d41f008711e2d64e0a4c6014a10d50'
+            '95519981ca08b52a359e6256ddf0086576a79529020deadc0aba1f358c7b888b'
             'b0462759c6d8a56a3a2516dad6b1cc621a98b2399c0cb458031cf7743012f395'
+            'b8dc235c039d5e05841551857c850671121c34dfb7f007176539e6cef97b54b0'
             '6f178493285330020d4c47b83487f1dd2ea077ca349772d3d4009c8e2bd749b7'
             'f3e7874db0042561e474d1e3eb67a3764bd4c3a119e1175c45b9599b13c77457')
 
@@ -145,6 +153,16 @@ prepare() {
   fi
   cd chromium-$pkgver
 
+  # Helper function to safely apply patches (skip if already applied)
+  apply_patch_safe() {
+    local patch_file="$1"
+    if patch --dry-run --forward -Np1 -i "$patch_file" &>/dev/null; then
+      patch -Np1 -i "$patch_file"
+    else
+      msg2 "Patch $(basename "$patch_file") already applied, skipping..."
+    fi
+  }
+
   # Remove Debian sysroot if it was downloaded (we don't need it for native ARM64)
   if [[ -d "build/linux/debian_bullseye_arm64-sysroot" ]]; then
     msg2 'Removing unnecessary Debian Bullseye ARM64 sysroot...'
@@ -175,34 +193,43 @@ prepare() {
   # Use the --oauth2-client-id= and --oauth2-client-secret= switches for
   # setting GOOGLE_DEFAULT_CLIENT_ID and GOOGLE_DEFAULT_CLIENT_SECRET at
   # runtime -- this allows signing into Chromium without baked-in values
-  patch -Np1 -i ../use-oauth2-client-switches-as-default.patch
+  apply_patch_safe "$srcdir/use-oauth2-client-switches-as-default.patch"
 
   # Upstream fixes
 
   # Fixes from Gentoo
-  patch -Np1 -i ../chromium-138-nodejs-version-check.patch
-  patch -Np1 -i ../chromium-141-cssstylesheet-iwyu.patch
+  apply_patch_safe "$srcdir/chromium-138-nodejs-version-check.patch"
+  apply_patch_safe "$srcdir/chromium-141-cssstylesheet-iwyu.patch"
 
   # Fix telemetry dependencies removed by ungoogled-chromium
-  patch -Np1 -i ../chromium-141-remove-telemetry-deps.patch
+  apply_patch_safe "$srcdir/chromium-141-remove-telemetry-deps.patch"
 
   # Fixes from NixOS
-  patch -Np1 -i ../chromium-138-rust-1.86-mismatched_lifetime_syntaxes.patch
+  apply_patch_safe "$srcdir/chromium-138-rust-1.86-mismatched_lifetime_syntaxes.patch"
+
+  # Fix Rust 1.86.0 allocator duplicate attributes (Chromium 141)
+  apply_patch_safe "$srcdir/chromium-141-rust-allocator-fix.patch"
+
+  # Fix DTSX ReadBits unsigned type mismatch (Chromium 141)
+  apply_patch_safe "$srcdir/chromium-141-dtsx-unsigned-fix.patch"
+
+  # Fix DTS stream parser ReadBits unsigned type mismatch (Chromium 141)
+  apply_patch_safe "$srcdir/chromium-141-dts-parser-unsigned-fix.patch"
 
   # Allow libclang_rt.builtins from compiler-rt >= 16 to be used
-  patch -Np1 -i ../compiler-rt-adjust-paths.patch
+  apply_patch_safe "$srcdir/compiler-rt-adjust-paths.patch"
 
   # Increase _FORTIFY_SOURCE level to match Arch's default flags
-  patch -Np1 -i ../increase-fortify-level.patch
+  apply_patch_safe "$srcdir/increase-fortify-level.patch"
 
   # Ensure AMD Polaris (RX550) is identified correctly
-  patch -Np1 -i ../chromium-rx550-device-names.patch
+  apply_patch_safe "$srcdir/chromium-rx550-device-names.patch"
 
   # VA-API hardware acceleration patches (CRITICAL for Baikal M)
   # Apply libvpx/libaom RTC patches for hardware encoding/decoding support
-  patch -Np1 -i ../libvpx-ratectrl.patch
-  patch -Np1 -i ../chromium-libvpx-rtc-static.patch
-  patch -Np1 -i ../chromium-libaom-rtc-static.patch
+  apply_patch_safe "$srcdir/libvpx-ratectrl.patch"
+  apply_patch_safe "$srcdir/chromium-libvpx-rtc-static.patch"
+  apply_patch_safe "$srcdir/chromium-libaom-rtc-static.patch"
 
   # Fixes for building with libstdc++ instead of libc++
 
@@ -225,6 +252,86 @@ prepare() {
   msg2 'Applying domain substitution'
   python "$_utils/domain_substitution.py" apply -r "$_ungoogled_repo/domain_regex.list" \
     -f "$_ungoogled_repo/domain_substitution.list" -c domainsubcache.tar.gz ./
+
+  # Fix safe_browsing BUILD.gn for ungoogled-chromium (safe_browsing_mode=0)
+  msg2 'Fixing safe_browsing BUILD.gn for disabled safe browsing'
+  apply_patch_safe "$srcdir/fix-safe-browsing-sources.patch"
+
+  # Fix libvpxrc and libaomrc targets for VA-API hardware encoding
+  # Note: chromium-libvpx-rtc-static.patch and chromium-libaom-rtc-static.patch
+  # already add these targets, but with wrong paths (//deps/lib/). We fix the paths here.
+  msg2 'Fixing libvpxrc and libaomrc RTC library paths for VA-API'
+
+  # Fix libvpxrc target in third_party/libvpx/BUILD.gn (add if missing)
+  if [[ -f "third_party/libvpx/BUILD.gn" ]] && ! grep -q 'source_set("libvpxrc")' third_party/libvpx/BUILD.gn; then
+    cat >> third_party/libvpx/BUILD.gn << 'EOF'
+
+# RTC library for VA-API hardware encoding
+# Uses static libraries from external/libvpx-rtc with full RTC API support
+config("libvpx_rc_link_settings") {
+  libs = [
+    "/work/external/libvpx-rtc/libvpxrc.a",
+    rebase_path("//deps/lib/libvpx.a", root_build_dir),
+  ]
+}
+
+source_set("libvpxrc") {
+  public_configs = [
+    ":libvpx_rc_link_settings",
+    ":libvpx_internal_headers",
+  ]
+  # Depend on main libvpx for includes
+  public_deps = [ ":libvpx" ]
+}
+EOF
+    echo "✓ Added libvpxrc target to third_party/libvpx/BUILD.gn"
+  fi
+
+  # Fix libaomrc paths in third_party/libaom/BUILD.gn (already exists from patch, just fix paths)
+  if [[ -f "third_party/libaom/BUILD.gn" ]]; then
+    # Use Python for reliable regex replacement
+    python3 << 'PYEOF'
+import re
+
+with open('third_party/libaom/BUILD.gn', 'r') as f:
+    content = f.read()
+
+# Fix library paths
+content = content.replace('//deps/lib/libaom_av1_rc.a', '/work/external/libaom-rtc/out-rtc/libaom_av1_rc.a')
+content = content.replace('//deps/lib/libaom.a', '/work/external/libaom-rtc/out-rtc/libaom.a')
+content = content.replace('include_dirs = [ "//deps/include" ]', 'include_dirs = [ "/work/external/libaom-rtc" ]')
+
+# Replace libaom_rc_link_settings config (bundled libaom, not system)
+new_config = '''config("libaom_rc_link_settings") {
+  include_dirs = [ "/work/external/libaom-rtc" ]
+  ldflags = [
+    rebase_path("/work/external/libaom-rtc/out-rtc/libaom_av1_rc.a", root_build_dir),
+    rebase_path("/work/external/libaom-rtc/out-rtc/libaom.a", root_build_dir),
+  ]
+}'''
+
+content = re.sub(
+    r'config\("libaom_rc_link_settings"\)\s*\{[^}]+\}',
+    new_config,
+    content,
+    flags=re.DOTALL
+)
+
+# Add public_deps to libaomrc if not present
+if 'public_deps = [ ":libaom" ]' not in content:
+    content = re.sub(
+        r'(source_set\("libaomrc"\)\s*\{\s*public_configs\s*=\s*\[[^\]]+\])',
+        r'\1\n  public_deps = [ ":libaom" ]',
+        content
+    )
+
+with open('third_party/libaom/BUILD.gn', 'w') as f:
+    f.write(content)
+
+print('✓ Fixed libaomrc paths')
+PYEOF
+    echo "✓ Fixed libaomrc paths in third_party/libaom/BUILD.gn"
+  fi
 
   # Fix ungoogled-chromium domain substitution issues
   msg2 'Fixing domain substitution issues'
@@ -275,7 +382,27 @@ prepare() {
   # Fetch libvpx/libaom RTC source files for VA-API
   if [[ -x "$srcdir/fetch-libvpx-rtc.sh" ]]; then
     msg2 'Fetching libvpx/libaom RTC source files for VA-API'
-    "$srcdir/fetch-libvpx-rtc.sh" "$srcdir/chromium-$pkgver"
+    "$srcdir/fetch-libvpx-rtc.sh" "."
+  fi
+
+  # Copy libvpx RTC headers from external build to Chromium source tree
+  # These are needed for VA-API hardware encoding support
+  if [[ -d "$srcdir/../external/libvpx-rtc" ]]; then
+    msg2 'Copying libvpx RTC headers to Chromium source tree'
+    mkdir -p third_party/libvpx/source/libvpx/vpx/internal
+    mkdir -p third_party/libvpx/source/libvpx/vpx_util
+    mkdir -p third_party/libvpx/source/libvpx/vp8
+    mkdir -p third_party/libvpx/source/libvpx/vp9
+    cp "$srcdir/../external/libvpx-rtc/vpx/vpx_ext_ratectrl.h" \
+       third_party/libvpx/source/libvpx/vpx/ || true
+    cp "$srcdir/../external/libvpx-rtc/vpx/internal/vpx_ratectrl_rtc.h" \
+       third_party/libvpx/source/libvpx/vpx/internal/ || true
+    cp "$srcdir/../external/libvpx-rtc/vpx_util/vpx_thread.h" \
+       third_party/libvpx/source/libvpx/vpx_util/ || true
+    cp "$srcdir/../external/libvpx-rtc/vp8/vp8_ratectrl_rtc.h" \
+       third_party/libvpx/source/libvpx/vp8/ || true
+    cp "$srcdir/../external/libvpx-rtc/vp9/ratectrl_rtc.h" \
+       third_party/libvpx/source/libvpx/vp9/ || true
   fi
 
   # Remove bundled libraries for which we will use the system copies
@@ -298,6 +425,12 @@ prepare() {
 build() {
 
   cd chromium-$pkgver
+
+  # Create Node.js symlinks for both x64 and arm64 (build scripts may reference either)
+  mkdir -p third_party/node/linux/node-linux-x64/bin
+  mkdir -p third_party/node/linux/node-linux-arm64/bin
+  ln -sf /usr/bin/node third_party/node/linux/node-linux-x64/bin/node
+  ln -sf /usr/bin/node third_party/node/linux/node-linux-arm64/bin/node
 
   # Set Cortex-A57 optimizations for ARM64 native build
   local _build_arch="${CARCH:-$(uname -m)}"
@@ -374,6 +507,9 @@ build() {
     _flags+=("enable_nacl=false")  # NaCl not supported on ARM64
     _flags+=("use_thin_lto=false")  # Disabled: causes issues with OpenGL/EGL driver calls
     _flags+=("concurrent_links=1")  # Prevent OOM on 8GB RAM system (linking requires ~6-8GB per process)
+    # Use bundled libvpx/libaom with RTC API from deps/lib/ (NOT system libraries)
+    _flags+=("use_system_libvpx=false")
+    _flags+=("use_system_libaom=false")
     # Note: Cortex-A57 optimizations passed via CFLAGS (-march=armv8-a -mtune=cortex-a57)
     #       -O2 used instead of -O3 (stability for WebGL/Canvas rendering!)
     #       -ffast-math REMOVED (unsafe for OpenGL/WebGL/VA-API)
@@ -425,6 +561,10 @@ build() {
       "rustc_version=\"$(rustc --version)\""
     )
   fi
+
+  # Override ungoogled-chromium flags that disable required features
+  # TensorFlow Lite is required for on-device model inference (optimization guide)
+  _flags+=("build_with_tflite_lib=true")
 
   # Facilitate deterministic builds (taken from build/config/compiler/BUILD.gn)
   CFLAGS+='   -Wno-builtin-macro-redefined'

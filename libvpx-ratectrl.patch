@@ -1,15 +1,10 @@
-# Ensure GN exposes RTC headers when using system libvpx
-# Adds libvpx internal include dir and exports vpx_ratectrl_rtc through shim
-
-diff --git a/build/linux/unbundle/libvpx.gn b/build/linux/unbundle/libvpx.gn
-index 1234567..abcdefg 100644
 --- a/build/linux/unbundle/libvpx.gn
 +++ b/build/linux/unbundle/libvpx.gn
-@@
+@@ -1,9 +1,13 @@
  pkg_config("system_libvpx") {
    packages = [ "vpx" ]
  }
- 
+
 +config("libvpx_internal_headers") {
 +  include_dirs = [ "//third_party/libvpx/source/libvpx" ]
 +}
@@ -19,7 +14,7 @@ index 1234567..abcdefg 100644
    headers = [
      "vpx/vp8.h",
      "vpx/vp8cx.h",
-@@
+@@ -11,11 +15,12 @@
      "vpx/vpx_encoder.h",
      "vpx/vpx_frame_buffer.h",
      "vpx/vpx_image.h",
@@ -27,16 +22,9 @@ index 1234567..abcdefg 100644
 +    "vpx/internal/vpx_ratectrl_rtc.h",
    ]
  }
- 
+
  source_set("libvpx") {
    deps = [ ":libvpx_shim" ]
 -  public_configs = [ ":system_libvpx" ]
-+  public_configs = [
-+    ":system_libvpx",
-+    ":libvpx_internal_headers",
-+  ]
++  public_configs = [ ":system_libvpx", ":libvpx_internal_headers" ]
  }
- 
- # Stub for VA-API dependency - system libvpx already contains full encoder implementation
- # including rate control functionality needed by VA-API hardware encoding
- source_set("libvpxrc") {
