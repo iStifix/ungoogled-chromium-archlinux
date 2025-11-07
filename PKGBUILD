@@ -11,7 +11,7 @@
 
 pkgbase=ungoogled-chromium-baikal
 pkgname=("$pkgbase")
-pkgver=141.0.7390.122
+pkgver=142.0.7444.134
 pkgrel=1
 _launcher_ver=8
 _manual_clone=1
@@ -19,7 +19,7 @@ _system_clang=1
 # ungoogled chromium variables
 _pkgname=ungoogled-chromium
 _uc_usr=ungoogled-software
-_uc_ver=141.0.7390.122-1
+_uc_ver=142.0.7444.134-1
 pkgdesc="A lightweight approach to removing Google web service dependency"
 arch=('x86_64' 'aarch64')
 url="https://github.com/ungoogled-software/ungoogled-chromium"
@@ -137,6 +137,7 @@ _unwanted_bundled_libs=(
 depends+=(${_system_libs[@]})
 
 prepare() {
+
   if (( _manual_clone )); then
     if [[ ! -d chromium-$pkgver ]]; then
       # Prevent sysroot download for native ARM64 build
@@ -420,6 +421,10 @@ PYEOF
   ./build/linux/unbundle/replace_gn_files.py \
     --system-libraries "${!_system_libs[@]}"
 
+  # Generate missing header
+  python3 build/util/lastchange.py -m DAWN_COMMIT_HASH \
+    -s third_party/dawn --revision gpu/webgpu/DAWN_VERSION \
+    --header gpu/webgpu/dawn_commit_hash.h
 }
 
 build() {
